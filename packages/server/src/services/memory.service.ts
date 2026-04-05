@@ -18,7 +18,17 @@ interface MemorySearchResult {
   content: string;
   metadata: unknown;
   importance: number;
-  distance?: number;
+  similarity?: number;
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
 async function generateEmbedding(text: string): Promise<number[] | null> {
@@ -48,37 +58,13 @@ export async function createMemoryWithEmbedding(
 ): Promise<{ id: string }> {
   const embedding = await generateEmbedding(`${input.title} ${input.content}`);
 
-  if (embedding) {
-    const vectorStr = `[${embedding.join(",")}]`;
-    const result = await prisma.$queryRaw<Array<{ id: string }>>`
-      INSERT INTO "Memory" ("id", "userId", "type", "title", "content", "embedding", "metadata", "importance", "accessCount", "sessionId", "tags", "createdAt", "updatedAt")
-      VALUES (
-        gen_random_uuid()::TEXT,
-        ${userId},
-        ${input.type},
-        ${input.title},
-        ${input.content},
-        ${vectorStr}::vector,
-        ${input.metadata ? JSON.stringify(input.metadata) : null}::jsonb,
-        ${input.importance ?? 0.5},
-        0,
-        ${input.sessionId || null},
-        ARRAY[]::TEXT[],
-        NOW(),
-        NOW()
-      )
-      RETURNING "id"
-    `;
-    return { id: result[0].id };
-  }
-
-  // Fallback: create without embedding
   const memory = await prisma.memory.create({
     data: {
       userId,
       type: input.type,
       title: input.title,
       content: input.content,
+      embedding: embedding ?? undefined,
       metadata: input.metadata as Prisma.JsonObject || undefined,
       importance: input.importance ?? 0.5,
       sessionId: input.sessionId,
@@ -99,17 +85,39 @@ export async function searchMemoriesByVector(
 
   if (embedding) {
     try {
-      const vectorStr = `[${embedding.join(",")}]`;
-      const results = await prisma.$queryRaw<MemorySearchResult[]>`
-        SELECT "id", "type", "title", "content", "metadata", "importance",
-               "embedding" <=> ${vectorStr}::vector AS "distance"
-        FROM "Memory"
-        WHERE "userId" = ${userId}
-          AND "embedding" IS NOT NULL
-        ORDER BY "distance" ASC
-        LIMIT ${limit}
-      `;
-      return results;
+      // Fetch recent memories with embeddings and compute cosine similarity in app code
+      const memories = await prisma.memory.findMany({
+        where: {
+          userId,
+          embedding: { not: Prisma.DbNull },
+        },
+        orderBy: { updatedAt: "desc" },
+        take: 1000,
+        select: {
+          id: true,
+          type: true,
+          title: true,
+          content: true,
+          metadata: true,
+          importance: true,
+          embedding: true,
+        },
+      });
+
+      const scored = memories
+        .map((m) => ({
+          id: m.id,
+          type: m.type,
+          title: m.title,
+          content: m.content,
+          metadata: m.metadata,
+          importance: m.importance,
+          similarity: cosineSimilarity(embedding, m.embedding as number[]),
+        }))
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, limit);
+
+      return scored;
     } catch (err) {
       console.error("[Memory] Vector search failed, falling back to text search:", err);
     }

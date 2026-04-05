@@ -1,12 +1,10 @@
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
-  provider   = "postgresql"
-  url        = env("DATABASE_URL")
-  extensions = [vector]
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -62,7 +60,7 @@ model Memory {
   title        String
   content      String
   name         String?
-  embedding    Unsupported("vector(1536)")?
+  embedding    Json?
   metadata     Json?
   importance   Float     @default(0.5)
   accessCount  Int       @default(0)

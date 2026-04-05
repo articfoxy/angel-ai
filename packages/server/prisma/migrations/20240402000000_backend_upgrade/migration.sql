@@ -1,5 +1,5 @@
--- Enable pgvector extension
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Enable pg_trgm extension for text search
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Add new columns to Session
 ALTER TABLE "Session" ADD COLUMN "modeId" TEXT NOT NULL DEFAULT 'meeting';
@@ -19,7 +19,7 @@ ALTER TABLE "Memory" DROP COLUMN "content";
 ALTER TABLE "Memory" RENAME COLUMN "content_text" TO "content";
 
 -- Add new Memory columns
-ALTER TABLE "Memory" ADD COLUMN "embedding" vector(1536);
+ALTER TABLE "Memory" ADD COLUMN "embedding" JSONB;
 ALTER TABLE "Memory" ADD COLUMN "metadata" JSONB;
 ALTER TABLE "Memory" ADD COLUMN "importance" DOUBLE PRECISION NOT NULL DEFAULT 0.5;
 ALTER TABLE "Memory" ADD COLUMN "accessCount" INTEGER NOT NULL DEFAULT 0;
