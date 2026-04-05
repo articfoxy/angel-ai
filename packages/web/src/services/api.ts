@@ -6,11 +6,12 @@ import type {
   Action,
   Digest,
   User,
-  Mode,
   WhisperCard,
+  MemoryStats,
   Streak,
   DashboardStats,
   UserPreferences,
+  AngelMode,
 } from '../types';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -108,12 +109,12 @@ export const api = {
     return request<Memory>(`/api/memory/${id}`);
   },
 
-  deleteMemory(id: string) {
-    return request<void>(`/api/memory/${id}`, { method: 'DELETE' });
+  searchMemories(query: string) {
+    return request<Memory[]>(`/api/memory?search=${encodeURIComponent(query)}`);
   },
 
-  searchMemories(query: string) {
-    return request<Memory[]>(`/api/memory/search?q=${encodeURIComponent(query)}`);
+  deleteMemory(id: string) {
+    return request<void>(`/api/memory/${id}`, { method: 'DELETE' });
   },
 
   getMemoryStats() {
@@ -155,11 +156,18 @@ export const api = {
 
   // Modes
   getModes() {
-    return request<Mode[]>('/api/modes');
+    return request<AngelMode[]>('/api/modes');
   },
 
   getMode(modeId: string) {
-    return request<Mode>(`/api/modes/${modeId}`);
+    return request<AngelMode>(`/api/modes/${modeId}`);
+  },
+
+  updateModeSettings(modeId: string, settings: Record<string, unknown>) {
+    return request<void>(`/api/modes/${modeId}/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    });
   },
 
   setDefaultMode(modeId: string) {
@@ -197,7 +205,7 @@ export const api = {
 
   updatePreferences(prefs: Partial<UserPreferences>) {
     return request<UserPreferences>('/api/preferences', {
-      method: 'PATCH',
+      method: 'PUT',
       body: JSON.stringify(prefs),
     });
   },

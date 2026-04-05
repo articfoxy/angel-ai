@@ -73,8 +73,7 @@ export interface WhisperCard {
   ttl?: number;
   relatedMemoryId?: string;
   createdAt: string;
-  feedback?: 'positive' | 'negative';
-  acknowledged?: boolean;
+  helpful?: boolean | null;
 }
 
 export interface Action {
@@ -97,7 +96,10 @@ export interface Digest {
   followUps: DigestItem[];
   opportunities: DigestItem[];
   ideas: DigestItem[];
+  commitments?: DigestItem[];
   saves?: DigestItem[];
+  streak?: number;
+  sessionCount?: number;
 }
 
 export interface DigestItem {
@@ -114,7 +116,8 @@ export interface AuthResponse {
 
 export type SessionState = 'idle' | 'recording' | 'processing' | 'completed';
 
-export interface Mode {
+// Angel Modes
+export interface AngelMode {
   id: string;
   name: string;
   icon: string;
@@ -122,25 +125,46 @@ export interface Mode {
   color: string;
 }
 
+export const ANGEL_MODES: AngelMode[] = [
+  { id: 'meeting', name: 'Meeting Angel', icon: '\uD83C\uDFAF', description: 'People context, smart questions, commitment tracking', color: 'blue' },
+  { id: 'translator', name: 'Translator Angel', icon: '\uD83C\uDF0D', description: 'Real-time translation during conversations', color: 'emerald' },
+  { id: 'think', name: 'Think Angel', icon: '\uD83E\uDDE0', description: 'Solo brainstorm with idea connections', color: 'violet' },
+  { id: 'sales', name: 'Sales Angel', icon: '\uD83D\uDCBC', description: 'Objection handling, competitor intel', color: 'amber' },
+  { id: 'learning', name: 'Learning Angel', icon: '\uD83D\uDCDA', description: 'Key concepts, flashcards, knowledge building', color: 'pink' },
+  { id: 'coach', name: 'Coach Angel', icon: '\uD83D\uDDE3\uFE0F', description: 'Speaking pace, filler words, communication tips', color: 'orange' },
+  { id: 'builder', name: 'Builder Angel', icon: '\uD83D\uDD27', description: 'Technical fact checks, decision records', color: 'cyan' },
+];
+
+// Memory Stats
+export interface MemoryStats {
+  people: number;
+  projects: number;
+  commitments: number;
+  saves: number;
+  total: number;
+}
+
+// Streak / Engagement
 export interface Streak {
   current: number;
   longest: number;
-  lastSessionDate: string;
-}
-
-export interface DashboardStats {
-  streak: Streak;
-  saves: number;
-  memoryStats: MemoryStats;
-  pendingCommitments: ActionItem[];
   todaySessions: number;
 }
 
+// Dashboard Stats
+export interface DashboardStats {
+  streak: Streak;
+  angelSaves: number;
+  memoryStats: MemoryStats;
+  pendingCommitments: ActionItem[];
+}
+
+// User Preferences
 export interface UserPreferences {
   whisperFrequency: 'silent' | 'minimal' | 'active' | 'aggressive';
   dailyDigest: boolean;
-  dailyDigestTime?: string;
-  defaultModeId?: string;
+  digestTime: string;
+  defaultMode: string;
   timezone: string;
   autoDeleteDays: number;
 }

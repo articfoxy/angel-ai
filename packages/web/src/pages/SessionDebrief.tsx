@@ -10,32 +10,14 @@ import {
   ClipboardList,
   Loader,
   Sparkles,
+  MessageSquare,
   Clock,
-  ThumbsUp,
-  ThumbsDown,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { ActionPanel } from '../components/ActionPanel';
-import { ANGEL_MODES } from '../components/ModeSelector';
+import { WhisperCardNew } from '../components/WhisperCardNew';
+import { getModeById } from '../components/ModeSelector';
 import type { Session, Action, WhisperCard } from '../types';
-
-function formatTimestamp(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-const whisperTypeIcons: Record<string, string> = {
-  context: '🔍',
-  question: '❓',
-  commitment: '✅',
-  fact_check: '📊',
-  nudge: '🔔',
-  action: '⚡',
-  suggestion: '💡',
-  reminder: '🔔',
-  insight: '✨',
-};
 
 export function SessionDebrief() {
   const { id } = useParams<{ id: string }>();
@@ -49,34 +31,34 @@ export function SessionDebrief() {
   } | null>(null);
   const [generatedAction, setGeneratedAction] = useState<Action | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
 
   useEffect(() => {
     if (!id) return;
 
     const fetchData = async () => {
       try {
-        const [sess, cards] = await Promise.all([
+        const [s, w] = await Promise.all([
           api.getSession(id),
           api.getSessionWhispers(id).catch(() => []),
         ]);
-        setSession(sess);
-        setWhispers(cards);
+        setSession(s);
+        setWhispers(w);
       } catch {
         // Demo: show placeholder data
         setSession({
           id: id,
           userId: 'demo',
           mode: 'meeting',
-          modeId: 'meeting',
           status: 'completed',
           title: 'Demo Session',
           startedAt: new Date().toISOString(),
           endedAt: new Date().toISOString(),
           duration: 1200,
           transcript: [
-            { id: '1', speaker: 'Speaker 1', text: 'We need to finalize the Q3 budget by Friday.', timestamp: 12 },
-            { id: '2', speaker: 'Speaker 2', text: 'I think we should also consider the vendor evaluation.', timestamp: 45 },
-            { id: '3', speaker: 'Speaker 1', text: 'Good point. Sarah mentioned Q3 concerns last time.', timestamp: 78 },
+            { id: '1', speaker: 'Speaker 1', text: 'We need to finalize the Q3 budget before Friday.', timestamp: 30 },
+            { id: '2', speaker: 'Speaker 2', text: 'I agree. Let me pull the numbers from finance.', timestamp: 45 },
+            { id: '3', speaker: 'Speaker 1', text: 'Also, Sarah mentioned concerns about the vendor evaluation.', timestamp: 90 },
           ],
           summary:
             'Discussed project timeline for Q2, design direction, and budget approval process. Key decisions were made about vendor evaluation and team scheduling.',
@@ -100,14 +82,13 @@ export function SessionDebrief() {
           ],
         });
         setWhispers([
-          { id: 'w1', sessionId: id, type: 'context', content: 'Last met Sarah 2 weeks ago - she raised Q3 budget concerns', createdAt: new Date().toISOString(), feedback: 'positive' },
-          { id: 'w2', sessionId: id, type: 'commitment', content: 'You committed to sending mockups by Friday', createdAt: new Date().toISOString(), acknowledged: true },
+          { id: 'w1', sessionId: id, type: 'context', content: 'Last met Alex 2 weeks ago — discussed mobile redesign progress', createdAt: new Date().toISOString(), helpful: true },
+          { id: 'w2', sessionId: id, type: 'commitment', content: 'You promised to send mockups by Friday', createdAt: new Date().toISOString() },
         ]);
       } finally {
         setLoading(false);
       }
     };
-
     fetchData();
   }, [id]);
 
@@ -175,7 +156,7 @@ export function SessionDebrief() {
     );
   }
 
-  const modeInfo = ANGEL_MODES.find((m) => m.id === (session.modeId || session.mode));
+  const modeInfo = getModeById(session.mode);
 
   return (
     <div className="flex-1 overflow-y-auto pb-24">
@@ -200,12 +181,11 @@ export function SessionDebrief() {
             })}
           </p>
         </div>
-        {modeInfo && (
-          <span className="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-2.5 py-1 text-xs text-text-secondary">
-            <span>{modeInfo.icon}</span>
-            <span>{modeInfo.name}</span>
-          </span>
-        )}
+        {/* Mode badge */}
+        <span className="flex items-center gap-1 bg-surface rounded-full px-2.5 py-1 text-xs">
+          <span>{modeInfo.icon}</span>
+          <span className="text-text-secondary">{modeInfo.name.replace(' Angel', '')}</span>
+        </span>
       </div>
 
       {/* Summary */}
@@ -233,18 +213,12 @@ export function SessionDebrief() {
               <div key={i} className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
                   <span className="text-xs font-semibold text-primary">
-                    {p.name
-                      .split(' ')
-                      .map((w) => w[0])
-                      .join('')
-                      .toUpperCase()}
+                    {p.name.split(' ').map((w) => w[0]).join('').toUpperCase()}
                   </span>
                 </div>
                 <div>
                   <p className="text-xs font-medium text-text">{p.name}</p>
-                  {p.role && (
-                    <p className="text-[10px] text-text-tertiary">{p.role}</p>
-                  )}
+                  {p.role && <p className="text-[10px] text-text-tertiary">{p.role}</p>}
                 </div>
               </div>
             ))}
@@ -267,19 +241,18 @@ export function SessionDebrief() {
         </div>
       )}
 
-      {/* Promises / Commitments */}
+      {/* Commitments / Promises */}
       {session.promises.length > 0 && (
         <div className="px-5 py-4">
-          <h2 className="text-sm font-semibold text-text mb-3">
-            Commitments & Promises
-          </h2>
+          <h2 className="text-sm font-semibold text-text mb-3">Commitments</h2>
           <ul className="space-y-2">
             {session.promises.map((promise, i) => (
               <li
                 key={i}
-                className="bg-warning/5 border border-warning/20 rounded-lg px-3 py-2 text-sm text-text-secondary"
+                className="bg-green-500/5 border border-green-500/20 rounded-lg px-3 py-2 text-sm text-text-secondary flex items-start gap-2"
               >
-                {promise}
+                <span className="text-green-400 mt-0.5">&#x2705;</span>
+                <span>{promise}</span>
               </li>
             ))}
           </ul>
@@ -303,19 +276,11 @@ export function SessionDebrief() {
                   <Circle size={18} className="text-text-tertiary mt-0.5 shrink-0" />
                 )}
                 <div className="flex-1">
-                  <p
-                    className={`text-sm ${
-                      item.completed
-                        ? 'text-text-tertiary line-through'
-                        : 'text-text'
-                    }`}
-                  >
+                  <p className={`text-sm ${item.completed ? 'text-text-tertiary line-through' : 'text-text'}`}>
                     {item.text}
                   </p>
                   {item.assignee && (
-                    <p className="text-[10px] text-text-tertiary mt-0.5">
-                      {item.assignee}
-                    </p>
+                    <p className="text-[10px] text-text-tertiary mt-0.5">{item.assignee}</p>
                   )}
                 </div>
               </button>
@@ -329,31 +294,18 @@ export function SessionDebrief() {
         <div className="px-5 py-4">
           <h2 className="text-sm font-semibold text-text mb-3">Angel Whispers</h2>
           <div className="space-y-2">
-            {whispers.map((w) => (
-              <div
-                key={w.id}
-                className="bg-surface rounded-xl px-4 py-3 flex items-start gap-3"
-              >
-                <span className="text-base mt-0.5">{whisperTypeIcons[w.type] || '💡'}</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-text leading-relaxed">{w.content}</p>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    {w.feedback === 'positive' && (
-                      <span className="inline-flex items-center gap-1 text-[10px] text-success">
-                        <ThumbsUp size={10} /> Helpful
-                      </span>
-                    )}
-                    {w.feedback === 'negative' && (
-                      <span className="inline-flex items-center gap-1 text-[10px] text-text-tertiary">
-                        <ThumbsDown size={10} /> Not useful
-                      </span>
-                    )}
-                    {w.acknowledged && (
-                      <span className="text-[10px] text-success">Acknowledged</span>
-                    )}
-                  </div>
-                </div>
-              </div>
+            {whispers.map((card) => (
+              <WhisperCardNew
+                key={card.id}
+                card={{ ...card, ttl: 0 }}
+                onDismiss={() => {}}
+                onFeedback={(cardId, helpful) => {
+                  api.submitWhisperFeedback(cardId, helpful).catch(() => {});
+                  setWhispers((prev) =>
+                    prev.map((w) => (w.id === cardId ? { ...w, helpful } : w))
+                  );
+                }}
+              />
             ))}
           </div>
         </div>
@@ -362,21 +314,32 @@ export function SessionDebrief() {
       {/* Full Transcript */}
       {session.transcript.length > 0 && (
         <div className="px-5 py-4">
-          <h2 className="text-sm font-semibold text-text mb-3">Full Transcript</h2>
-          <div className="bg-surface rounded-xl p-4 space-y-3 max-h-80 overflow-y-auto">
-            {session.transcript.map((seg, i) => (
-              <div key={seg.id || i}>
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span className="text-xs font-medium text-primary">{seg.speaker}</span>
-                  <span className="text-[10px] text-text-tertiary flex items-center gap-1">
-                    <Clock size={10} />
-                    {formatTimestamp(seg.timestamp)}
-                  </span>
+          <button
+            onClick={() => setShowTranscript(!showTranscript)}
+            className="flex items-center gap-2 mb-3"
+          >
+            <MessageSquare size={14} className="text-text-secondary" />
+            <h2 className="text-sm font-semibold text-text">Full Transcript</h2>
+            <span className="text-xs text-text-tertiary">
+              ({session.transcript.length} segments)
+            </span>
+          </button>
+          {showTranscript && (
+            <div className="bg-surface rounded-xl p-4 space-y-3 animate-fade-in">
+              {session.transcript.map((seg, i) => (
+                <div key={seg.id || i}>
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className="text-xs font-medium text-primary">{seg.speaker}</span>
+                    <span className="text-[10px] text-text-tertiary flex items-center gap-0.5">
+                      <Clock size={8} />
+                      {Math.floor(seg.timestamp / 60)}:{(Math.floor(seg.timestamp % 60)).toString().padStart(2, '0')}
+                    </span>
+                  </div>
+                  <p className="text-sm text-text/90 leading-relaxed">{seg.text}</p>
                 </div>
-                <p className="text-sm text-text-secondary leading-relaxed">{seg.text}</p>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

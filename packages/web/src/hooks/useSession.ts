@@ -16,13 +16,13 @@ interface UseSessionReturn {
   connect: () => void;
   disconnect: () => void;
   sendAudioChunk: (chunk: string) => void;
-  sendPcmFrame: (frame: Int16Array) => void;
+  sendPCMChunk: (frame: Int16Array) => void;
   dismissWhisper: (id: string) => void;
-  submitFeedback: (cardId: string, helpful: boolean) => void;
+  sendWhisperFeedback: (cardId: string, helpful: boolean) => void;
   acknowledgeWhisper: (cardId: string) => void;
+  startLiveSession: (modeId: string) => void;
+  stopLiveSession: () => void;
   switchMode: (modeId: string) => void;
-  startLive: (modeId: string) => void;
-  stopLive: () => void;
 }
 
 export function useSession({ sessionId, token }: UseSessionOptions): UseSessionReturn {
@@ -52,12 +52,12 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
       }, 1000);
     });
 
-    // Legacy transcript update (still supported)
+    // Legacy event
     socket.on('transcript:update', (segment: TranscriptSegment) => {
       setTranscript((prev) => [...prev, { ...segment, isFinal: true }]);
     });
 
-    // New: streaming delta (interim results)
+    // New streaming events
     socket.on('transcript:delta', (delta: TranscriptSegment) => {
       setTranscript((prev) => {
         const existing = prev.findIndex((s) => s.id === delta.id);
@@ -70,7 +70,6 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
       });
     });
 
-    // New: final segment
     socket.on('transcript:final', (segment: TranscriptSegment) => {
       setTranscript((prev) => {
         const existing = prev.findIndex((s) => s.id === segment.id);
@@ -89,6 +88,15 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
         navigator.vibrate(50);
       }
       setWhisperCards((prev) => [...prev, card]);
+    });
+
+    socket.on('inference:thinking', () => {
+      setIsThinking(true);
+      setTimeout(() => setIsThinking(false), 5000);
+    });
+
+    socket.on('session:live-status', (status: { state: SessionState }) => {
+      setState(status.state);
     });
 
     socket.on('session:processing', () => {
@@ -129,7 +137,7 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
     socketRef.current?.emit('audio:chunk', { data: chunk });
   }, []);
 
-  const sendPcmFrame = useCallback((frame: Int16Array) => {
+  const sendPCMChunk = useCallback((frame: Int16Array) => {
     socketRef.current?.emit('audio:chunk', frame.buffer);
   }, []);
 
@@ -137,32 +145,27 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
     setWhisperCards((prev) => prev.filter((c) => c.id !== id));
   }, []);
 
-  const submitFeedback = useCallback((cardId: string, helpful: boolean) => {
+  const sendWhisperFeedback = useCallback((cardId: string, helpful: boolean) => {
     socketRef.current?.emit('whisper:feedback', { cardId, helpful });
     setWhisperCards((prev) =>
-      prev.map((c) =>
-        c.id === cardId ? { ...c, feedback: helpful ? 'positive' : 'negative' } : c
-      )
+      prev.map((c) => (c.id === cardId ? { ...c, helpful } : c))
     );
   }, []);
 
   const acknowledgeWhisper = useCallback((cardId: string) => {
     socketRef.current?.emit('whisper:acknowledge', { cardId });
-    setWhisperCards((prev) =>
-      prev.map((c) => (c.id === cardId ? { ...c, acknowledged: true } : c))
-    );
+  }, []);
+
+  const startLiveSession = useCallback((modeId: string) => {
+    socketRef.current?.emit('session:start-live', { modeId });
+  }, []);
+
+  const stopLiveSession = useCallback(() => {
+    socketRef.current?.emit('session:stop-live');
   }, []);
 
   const switchMode = useCallback((modeId: string) => {
     socketRef.current?.emit('mode:switch', { modeId });
-  }, []);
-
-  const startLive = useCallback((modeId: string) => {
-    socketRef.current?.emit('session:start-live', { modeId });
-  }, []);
-
-  const stopLive = useCallback(() => {
-    socketRef.current?.emit('session:stop-live');
   }, []);
 
   useEffect(() => {
@@ -181,12 +184,12 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
     connect,
     disconnect,
     sendAudioChunk,
-    sendPcmFrame,
+    sendPCMChunk,
     dismissWhisper,
-    submitFeedback,
+    sendWhisperFeedback,
     acknowledgeWhisper,
+    startLiveSession,
+    stopLiveSession,
     switchMode,
-    startLive,
-    stopLive,
   };
 }

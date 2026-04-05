@@ -13,7 +13,7 @@ export function BottomNav() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Hide on login/register pages and during active sessions
+  // Hide on login/register pages and during active recording
   if (location.pathname === '/login') return null;
 
   return (
@@ -53,7 +53,7 @@ export function BottomNav() {
             <button
               key={tab.path}
               onClick={() => navigate(tab.path)}
-              className="flex flex-col items-center justify-center min-w-[56px] h-full"
+              className="flex flex-col items-center justify-center min-w-[52px] h-full"
             >
               <Icon
                 size={20}

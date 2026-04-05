@@ -1,63 +1,63 @@
-import { useState, useEffect, useRef } from 'react';
-import { WhisperCard } from './WhisperCard';
-import type { WhisperCard as WhisperCardType } from '../types';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { WhisperCardNew } from './WhisperCardNew';
+import type { WhisperCard } from '../types';
 
 interface WhisperStackProps {
-  cards: WhisperCardType[];
+  cards: WhisperCard[];
   onDismiss: (id: string) => void;
-  onFeedback?: (cardId: string, helpful: boolean) => void;
-  onAcknowledge?: (cardId: string) => void;
+  onFeedback: (id: string, helpful: boolean) => void;
+  onAcknowledge: (id: string) => void;
 }
 
 const MAX_VISIBLE = 3;
 const THROTTLE_WINDOW = 5 * 60 * 1000; // 5 minutes
-const MAX_PER_WINDOW = 2;
+const THROTTLE_MAX = 2;
 
 export function WhisperStack({ cards, onDismiss, onFeedback, onAcknowledge }: WhisperStackProps) {
-  const [visibleCards, setVisibleCards] = useState<WhisperCardType[]>([]);
+  const [displayedIds, setDisplayedIds] = useState<Set<string>>(new Set());
   const displayTimesRef = useRef<number[]>([]);
 
-  useEffect(() => {
-    // Throttle: max 2 cards per 5 minutes
+  // Client-side throttle: max 2 per 5 minutes
+  const canDisplay = useCallback(() => {
     const now = Date.now();
-    displayTimesRef.current = displayTimesRef.current.filter(
-      (t) => now - t < THROTTLE_WINDOW
-    );
+    const recent = displayTimesRef.current.filter((t) => now - t < THROTTLE_WINDOW);
+    displayTimesRef.current = recent;
+    return recent.length < THROTTLE_MAX;
+  }, []);
 
-    const newCards = cards.filter(
-      (c) => !visibleCards.some((v) => v.id === c.id)
-    );
-
-    const toAdd: WhisperCardType[] = [];
-    for (const card of newCards) {
-      if (displayTimesRef.current.length < MAX_PER_WINDOW) {
-        toAdd.push(card);
-        displayTimesRef.current.push(now);
+  useEffect(() => {
+    for (const card of cards) {
+      if (!displayedIds.has(card.id) && canDisplay()) {
+        setDisplayedIds((prev) => new Set(prev).add(card.id));
+        displayTimesRef.current.push(Date.now());
       }
     }
+  }, [cards, displayedIds, canDisplay]);
 
-    if (toAdd.length > 0) {
-      setVisibleCards((prev) => [...prev, ...toAdd].slice(-MAX_VISIBLE));
-    }
-  }, [cards]);
+  const visibleCards = cards
+    .filter((c) => displayedIds.has(c.id))
+    .slice(-MAX_VISIBLE);
 
   const handleDismiss = (id: string) => {
-    setVisibleCards((prev) => prev.filter((c) => c.id !== id));
+    const card = cards.find((c) => c.id === id);
+    if (card?.type === 'commitment') {
+      onAcknowledge(id);
+    }
     onDismiss(id);
   };
 
   if (visibleCards.length === 0) return null;
 
   return (
-    <div className="fixed bottom-20 left-4 right-4 z-40 flex flex-col gap-2 md:left-auto md:right-6 md:w-96">
+    <div className="fixed bottom-20 left-4 right-4 md:left-auto md:right-4 md:w-80 z-40 space-y-2 pointer-events-none">
       {visibleCards.map((card) => (
-        <WhisperCard
-          key={card.id}
-          card={card}
-          onDismiss={handleDismiss}
-          onFeedback={onFeedback}
-          onAcknowledge={onAcknowledge}
-        />
+        <div key={card.id} className="pointer-events-auto">
+          <WhisperCardNew
+            card={card}
+            onDismiss={handleDismiss}
+            onFeedback={onFeedback}
+          />
+        </div>
       ))}
     </div>
   );

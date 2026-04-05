@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
-import { MessageSquare, Users, CheckCircle, Clock, Footprints } from 'lucide-react';
+import { Users, CheckCircle, Clock } from 'lucide-react';
+import { getModeById } from './ModeSelector';
 import type { Session } from '../types';
 
 interface SessionCardProps {
@@ -30,6 +31,7 @@ function formatDate(dateStr: string): string {
 
 export function SessionCard({ session }: SessionCardProps) {
   const navigate = useNavigate();
+  const mode = getModeById(session.mode);
 
   return (
     <button
@@ -46,14 +48,8 @@ export function SessionCard({ session }: SessionCardProps) {
           </p>
         </div>
         <div className="flex items-center gap-1 text-text-tertiary ml-2">
-          {session.mode === 'walk_and_think' ? (
-            <Footprints size={14} />
-          ) : (
-            <MessageSquare size={14} />
-          )}
-          <span className="text-[10px] capitalize">
-            {session.mode === 'walk_and_think' ? 'Walk' : 'Chat'}
-          </span>
+          <span className="text-sm">{mode.icon}</span>
+          <span className="text-[10px]">{mode.name.replace(' Angel', '')}</span>
         </div>
       </div>
 

@@ -10,45 +10,46 @@ import {
   LogOut,
   ChevronRight,
   Clock,
-  Bell,
+  Globe,
 } from 'lucide-react';
+import { ModeSelector, getModeById } from '../components/ModeSelector';
+import { api } from '../services/api';
 import type { UserPreferences } from '../types';
 
 const whisperLevels = [
-  { value: 'silent' as const, label: 'Silent', desc: 'No whispers during sessions' },
-  { value: 'minimal' as const, label: 'Minimal', desc: 'Only critical insights' },
-  { value: 'active' as const, label: 'Active', desc: 'Regular helpful whispers' },
-  { value: 'aggressive' as const, label: 'Aggressive', desc: 'Maximum AI assistance' },
-];
+  { value: 'silent', label: 'Silent', desc: 'No whispers during sessions' },
+  { value: 'minimal', label: 'Minimal', desc: 'Only critical insights' },
+  { value: 'active', label: 'Active', desc: 'Regular helpful suggestions' },
+  { value: 'aggressive', label: 'Aggressive', desc: 'Maximum AI assistance' },
+] as const;
 
 export function Settings() {
   const { user, logout } = useAuth();
   const [prefs, setPrefs] = useState<UserPreferences>({
     whisperFrequency: 'active',
     dailyDigest: true,
-    dailyDigestTime: '08:00',
-    defaultModeId: 'meeting',
+    digestTime: '09:00',
+    defaultMode: 'meeting',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     autoDeleteDays: 30,
   });
-  const [saving, setSaving] = useState(false);
+  const [showModeSelector, setShowModeSelector] = useState(false);
 
   useEffect(() => {
-    api.getPreferences().then(setPrefs).catch(() => {});
+    api.getPreferences().then(setPrefs).catch(() => {
+      // Use defaults
+    });
   }, []);
 
-  const updatePref = async (update: Partial<UserPreferences>) => {
-    const updated = { ...prefs, ...update };
+  const updatePref = <K extends keyof UserPreferences>(key: K, value: UserPreferences[K]) => {
+    const updated = { ...prefs, [key]: value };
     setPrefs(updated);
-    setSaving(true);
-    try {
-      await api.updatePreferences(update);
-    } catch {
+    api.updatePreferences({ [key]: value }).catch(() => {
       // Demo mode
-    } finally {
-      setSaving(false);
-    }
+    });
   };
+
+  const currentMode = getModeById(prefs.defaultMode);
 
   return (
     <div className="flex-1 overflow-y-auto pb-24">
@@ -69,9 +70,7 @@ export function Settings() {
           </div>
           <div>
             <label className="text-xs text-text-tertiary">Email</label>
-            <p className="text-sm text-text mt-0.5">
-              {user?.email || 'demo@angel.ai'}
-            </p>
+            <p className="text-sm text-text mt-0.5">{user?.email || 'demo@angel.ai'}</p>
           </div>
         </div>
       </div>
@@ -87,19 +86,17 @@ export function Settings() {
             {whisperLevels.map((level) => (
               <button
                 key={level.value}
-                onClick={() => updatePref({ whisperFrequency: level.value })}
-                className={`py-2.5 px-3 rounded-lg text-left transition-colors ${
+                onClick={() => updatePref('whisperFrequency', level.value)}
+                className={`p-3 rounded-lg text-left transition-colors ${
                   prefs.whisperFrequency === level.value
-                    ? 'bg-primary text-white'
-                    : 'bg-bg text-text-secondary hover:bg-surface-hover'
+                    ? 'bg-primary/10 border border-primary/30'
+                    : 'bg-bg border border-transparent hover:bg-surface-hover'
                 }`}
               >
-                <p className="text-xs font-medium">{level.label}</p>
-                <p className={`text-[10px] mt-0.5 ${
-                  prefs.whisperFrequency === level.value ? 'text-white/70' : 'text-text-tertiary'
-                }`}>
-                  {level.desc}
+                <p className={`text-xs font-medium ${prefs.whisperFrequency === level.value ? 'text-primary' : 'text-text'}`}>
+                  {level.label}
                 </p>
+                <p className="text-[10px] text-text-tertiary mt-0.5">{level.desc}</p>
               </button>
             ))}
           </div>
@@ -109,26 +106,21 @@ export function Settings() {
       {/* Daily Digest */}
       <div className="px-5 mb-6">
         <div className="flex items-center gap-2 mb-3">
-          <Bell size={16} className="text-text-secondary" />
+          <Clock size={16} className="text-text-secondary" />
           <h2 className="text-sm font-semibold text-text">Daily Digest</h2>
         </div>
         <div className="bg-surface rounded-xl p-4 space-y-4">
           <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-text">Enable daily digest</p>
-              <p className="text-[10px] text-text-tertiary mt-0.5">
-                Get a summary of your day
-              </p>
-            </div>
+            <span className="text-sm text-text">Enable daily digest</span>
             <button
-              onClick={() => updatePref({ dailyDigest: !prefs.dailyDigest })}
+              onClick={() => updatePref('dailyDigest', !prefs.dailyDigest)}
               className={`relative w-11 h-6 rounded-full transition-colors ${
                 prefs.dailyDigest ? 'bg-primary' : 'bg-border'
               }`}
             >
               <span
-                className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                  prefs.dailyDigest ? 'translate-x-5.5' : 'translate-x-0.5'
+                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+                  prefs.dailyDigest ? 'translate-x-5' : 'translate-x-0'
                 }`}
               />
             </button>
@@ -138,9 +130,9 @@ export function Settings() {
               <label className="text-xs text-text-tertiary">Delivery time</label>
               <input
                 type="time"
-                value={prefs.dailyDigestTime || '08:00'}
-                onChange={(e) => updatePref({ dailyDigestTime: e.target.value })}
-                className="mt-1 w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+                value={prefs.digestTime}
+                onChange={(e) => updatePref('digestTime', e.target.value)}
+                className="mt-1 bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary w-full"
               />
             </div>
           )}
@@ -154,34 +146,39 @@ export function Settings() {
           <h2 className="text-sm font-semibold text-text">Default Mode</h2>
         </div>
         <div className="bg-surface rounded-xl p-4">
-          <div className="grid grid-cols-2 gap-2">
-            {ANGEL_MODES.map((mode) => (
-              <button
-                key={mode.id}
-                onClick={() => updatePref({ defaultModeId: mode.id })}
-                className={`flex items-center gap-2 py-2 px-3 rounded-lg text-left transition-colors ${
-                  prefs.defaultModeId === mode.id
-                    ? 'bg-primary/10 border border-primary/30'
-                    : 'bg-bg hover:bg-surface-hover border border-transparent'
-                }`}
-              >
-                <span className="text-base">{mode.icon}</span>
-                <span className="text-xs font-medium text-text">{mode.name.split(' ')[0]}</span>
-              </button>
-            ))}
-          </div>
+          <button
+            onClick={() => setShowModeSelector(!showModeSelector)}
+            className="w-full flex items-center justify-between"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-lg">{currentMode.icon}</span>
+              <span className="text-sm text-text">{currentMode.name}</span>
+            </div>
+            <ChevronRight size={16} className={`text-text-tertiary transition-transform ${showModeSelector ? 'rotate-90' : ''}`} />
+          </button>
+          {showModeSelector && (
+            <div className="mt-3 animate-fade-in">
+              <ModeSelector
+                selectedMode={prefs.defaultMode}
+                onSelect={(id) => {
+                  updatePref('defaultMode', id);
+                  setShowModeSelector(false);
+                }}
+              />
+            </div>
+          )}
         </div>
       </div>
 
       {/* Timezone */}
       <div className="px-5 mb-6">
         <div className="flex items-center gap-2 mb-3">
-          <Clock size={16} className="text-text-secondary" />
+          <Globe size={16} className="text-text-secondary" />
           <h2 className="text-sm font-semibold text-text">Timezone</h2>
         </div>
         <div className="bg-surface rounded-xl p-4">
           <p className="text-sm text-text">{prefs.timezone}</p>
-          <p className="text-[10px] text-text-tertiary mt-1">Auto-detected from your browser</p>
+          <p className="text-[10px] text-text-tertiary mt-1">Auto-detected from your device</p>
         </div>
       </div>
 
@@ -192,14 +189,12 @@ export function Settings() {
           <h2 className="text-sm font-semibold text-text">Privacy</h2>
         </div>
         <div className="bg-surface rounded-xl p-4">
-          <label className="text-xs text-text-tertiary">
-            Auto-delete sessions after
-          </label>
+          <label className="text-xs text-text-tertiary">Auto-delete sessions after</label>
           <div className="flex gap-2 mt-2">
             {[7, 30, 90, 0].map((days) => (
               <button
                 key={days}
-                onClick={() => updatePref({ autoDeleteDays: days })}
+                onClick={() => updatePref('autoDeleteDays', days)}
                 className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${
                   prefs.autoDeleteDays === days
                     ? 'bg-primary text-white'

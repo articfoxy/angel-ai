@@ -1,17 +1,5 @@
-import { useEffect, useState, useRef } from 'react';
-import {
-  Search,
-  HelpCircle,
-  CheckCircle2,
-  BarChart3,
-  Bell,
-  Zap,
-  X,
-  ThumbsUp,
-  ThumbsDown,
-  ChevronDown,
-  ChevronUp,
-} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Lightbulb, Bell, Info, Sparkles, X, ThumbsUp, ThumbsDown, Search, HelpCircle, CheckCircle, BarChart3, Zap } from 'lucide-react';
 import type { WhisperCard as WhisperCardType } from '../types';
 
 interface WhisperCardProps {
@@ -21,23 +9,28 @@ interface WhisperCardProps {
   onAcknowledge?: (cardId: string) => void;
 }
 
-const typeConfig = {
-  context: { icon: Search, color: 'border-l-blue-500', label: 'Context' },
-  question: { icon: HelpCircle, color: 'border-l-yellow-500', label: 'Question' },
-  commitment: { icon: CheckCircle2, color: 'border-l-green-500', label: 'Commitment' },
-  fact_check: { icon: BarChart3, color: 'border-l-purple-500', label: 'Fact Check' },
-  nudge: { icon: Bell, color: 'border-l-orange-500', label: 'Nudge' },
-  action: { icon: Zap, color: 'border-l-cyan-500', label: 'Action' },
-  // Legacy types
-  suggestion: { icon: Zap, color: 'border-l-yellow-500', label: 'Suggestion' },
-  reminder: { icon: Bell, color: 'border-l-blue-500', label: 'Reminder' },
-  insight: { icon: Search, color: 'border-l-green-500', label: 'Insight' },
+const typeIcons: Record<string, typeof Sparkles> = {
+  suggestion: Lightbulb,
+  reminder: Bell,
+  context: Search,
+  insight: Sparkles,
+  question: HelpCircle,
+  commitment: CheckCircle,
+  fact_check: BarChart3,
+  nudge: Bell,
+  action: Zap,
 };
 
-const priorityClasses = {
-  low: 'opacity-80',
-  medium: '',
-  high: 'ring-1 ring-primary/20',
+const typeColors: Record<string, string> = {
+  suggestion: 'border-warning/30 bg-warning/5',
+  reminder: 'border-primary/30 bg-primary/5',
+  context: 'border-blue-500/30 bg-blue-500/5',
+  insight: 'border-success/30 bg-success/5',
+  question: 'border-yellow-500/30 bg-yellow-500/5',
+  commitment: 'border-green-500/30 bg-green-500/5',
+  fact_check: 'border-purple-500/30 bg-purple-500/5',
+  nudge: 'border-orange-500/30 bg-orange-500/5',
+  action: 'border-cyan-500/30 bg-cyan-500/5',
 };
 
 export function WhisperCard({ card, onDismiss, onFeedback, onAcknowledge }: WhisperCardProps) {
