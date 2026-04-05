@@ -23,4 +23,7 @@ export const config = {
       process.env.WHISPER_CONFIDENCE_THRESHOLD || "0.8"
     ),
   },
+  apple: {
+    bundleId: process.env.APPLE_BUNDLE_ID || "com.angelai.app",
+  },
 } as const;
