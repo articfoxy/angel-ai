@@ -68,8 +68,10 @@ export const api = {
   },
 
   // Sessions
-  getSessions() {
-    return request<Session[]>('/api/sessions');
+  async getSessions(): Promise<Session[]> {
+    const res = await request<{ sessions: Session[]; total: number } | Session[]>('/api/sessions');
+    if (Array.isArray(res)) return res;
+    return (res as { sessions: Session[] }).sessions || [];
   },
 
   getSession(id: string) {

@@ -43,10 +43,10 @@ export function Dashboard() {
     return d.toDateString() === now.toDateString();
   });
 
-  const totalActions = sessions.reduce((n, s) => n + s.actionItems.length, 0);
+  const totalActions = sessions.reduce((n, s) => n + (s.actionItems?.length || 0), 0);
   const pendingActions: (ActionItem & { sessionTitle: string })[] = sessions.flatMap(
     (s) =>
-      s.actionItems
+      (s.actionItems || [])
         .filter((a) => !a.completed)
         .map((a) => ({ ...a, sessionTitle: s.title || 'Untitled' }))
   );
