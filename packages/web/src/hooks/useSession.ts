@@ -23,6 +23,7 @@ interface UseSessionReturn {
   startLiveSession: (modeId: string) => void;
   stopLiveSession: () => void;
   switchMode: (modeId: string) => void;
+  prepareSession: (modeId: string) => void;
 }
 
 export function useSession({ sessionId, token }: UseSessionOptions): UseSessionReturn {
@@ -168,6 +169,10 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
     socketRef.current?.emit('mode:switch', { modeId });
   }, []);
 
+  const prepareSession = useCallback((modeId: string) => {
+    socketRef.current?.emit('session:prepare', { modeId });
+  }, []);
+
   useEffect(() => {
     return () => {
       socketRef.current?.disconnect();
@@ -191,5 +196,6 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
     startLiveSession,
     stopLiveSession,
     switchMode,
+    prepareSession,
   };
 }

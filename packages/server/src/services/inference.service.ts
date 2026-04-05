@@ -84,19 +84,24 @@ export async function addTranscriptAndMaybeInfer(
     (s) => s.timestamp > threeMinutesAgo,
   );
 
-  // Trigger inference every 30 seconds of new speech
+  // Mode-dependent inference interval and card limits
+  const fastModes = new Set(["translator", "coach", "sales", "think"]);
+  const isFastMode = fastModes.has(state.modeId);
+  const inferenceInterval = isFastMode ? 10_000 : 20_000;
+  const cardWindowMs = isFastMode ? 3 * 60 * 1000 : 5 * 60 * 1000;
+  const maxCards = isFastMode ? 3 : 2;
+
   const timeSinceLastInference = now - state.lastInferenceAt;
-  if (timeSinceLastInference < 30_000) return;
+  if (timeSinceLastInference < inferenceInterval) return;
 
   state.lastInferenceAt = now;
 
-  // Reset card count every 5 minutes
-  if (now - state.lastCardDeliveryAt > 5 * 60 * 1000) {
+  // Reset card count based on mode window
+  if (now - state.lastCardDeliveryAt > cardWindowMs) {
     state.cardsDeliveredRecently = 0;
   }
 
-  // Max 2 cards per 5 minutes
-  if (state.cardsDeliveredRecently >= 2) return;
+  if (state.cardsDeliveredRecently >= maxCards) return;
 
   try {
     io.to(`session:${sessionId}`).emit("inference:thinking", {});
@@ -104,7 +109,6 @@ export async function addTranscriptAndMaybeInfer(
     const cards = await runInference(sessionId, userId, state);
 
     for (const card of cards) {
-      // Skip duplicates
       if (state.deliveredCardContents.has(card.content)) continue;
 
       const whisper = await prisma.whisperCard.create({
@@ -126,7 +130,7 @@ export async function addTranscriptAndMaybeInfer(
 
       io.to(`session:${sessionId}`).emit("whisper:card", whisper);
 
-      if (state.cardsDeliveredRecently >= 2) break;
+      if (state.cardsDeliveredRecently >= maxCards) break;
     }
   } catch (err) {
     console.error("Inference error:", err);
@@ -134,7 +138,7 @@ export async function addTranscriptAndMaybeInfer(
 }
 
 /**
- * Run GPT-4o-mini inference to generate whisper cards.
+ * Run GPT-4o-mini inference to generate whisper cards (streaming).
  */
 async function runInference(
   sessionId: string,
@@ -147,13 +151,12 @@ async function runInference(
     .map((s) => (s.speaker !== undefined ? `Speaker ${s.speaker}: ${s.text}` : s.text))
     .join("\n");
 
-  // Get relevant memories
+  // Get relevant memories (with caching — see memory.service.ts)
   const memories = await getRelevantMemories(userId, transcriptText, 5);
   const memoryContext = memories
     .map((m) => `[${m.type}] ${m.title}: ${m.content}`)
     .join("\n");
 
-  // Get mode config
   const modeConfig = getBuiltInModeConfig(state.modeId);
 
   if (!apiKey) {
@@ -172,6 +175,7 @@ async function runInference(
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
+        stream: true,
         messages: [
           {
             role: "system",
@@ -208,13 +212,42 @@ ${memoryContext || "No memories yet."}`,
       return [];
     }
 
-    const data = (await response.json()) as {
-      choices: Array<{ message: { content: string } }>;
-    };
-    const parsed = JSON.parse(data.choices[0].message.content) as {
-      cards?: WhisperCardData[];
-    };
+    // Collect streamed chunks into full response
+    let fullContent = "";
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
 
+    if (!reader) {
+      console.error("No response body reader");
+      return [];
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n").filter((l) => l.startsWith("data: "));
+
+      for (const line of lines) {
+        const jsonStr = line.slice(6).trim();
+        if (jsonStr === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(jsonStr) as {
+            choices: Array<{ delta: { content?: string } }>;
+          };
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if (delta) fullContent += delta;
+        } catch {
+          // skip malformed chunks
+        }
+      }
+    }
+
+    if (!fullContent) return [];
+
+    const parsed = JSON.parse(fullContent) as { cards?: WhisperCardData[] };
     const cards = (parsed.cards ?? []).filter(
       (c) => c.confidence >= 0.85 && c.content.length <= 140,
     );

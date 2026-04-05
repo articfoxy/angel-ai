@@ -44,7 +44,8 @@ export function createDeepgramSession(
       language: "en",
       smart_format: true,
       interim_results: true,
-      endpointing: 300,
+      endpointing: 100,        // was 300 — faster sentence finalization
+      utterance_end_ms: 1000,   // group natural utterances within 1s
       diarize: true,
       encoding: "linear16",
       sample_rate: 16000,

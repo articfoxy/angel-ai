@@ -17,6 +17,52 @@ interface AuthenticatedSocket extends Socket {
   deepgramSession?: DeepgramSessionHandle;
 }
 
+/**
+ * Extract transcript handler into a helper to avoid duplication
+ * between session:prepare and session:start-live.
+ */
+function createTranscriptHandler(socket: AuthenticatedSocket, io: Server) {
+  return {
+    onTranscript: (delta: TranscriptDelta) => {
+      if (delta.isFinal) {
+        socket.emit("transcript:final", {
+          text: delta.text,
+          speaker: delta.speaker,
+          timestamp: delta.timestamp,
+          confidence: delta.confidence,
+        });
+      } else {
+        socket.emit("transcript:delta", {
+          text: delta.text,
+          isFinal: false,
+          speaker: delta.speaker,
+          timestamp: delta.timestamp,
+          confidence: delta.confidence,
+        });
+      }
+
+      if (delta.isFinal && socket.activeSessionId) {
+        socket.transcriptBuffer?.push({
+          speaker: delta.speaker !== undefined ? `Speaker ${delta.speaker}` : "Speaker",
+          text: delta.text,
+          timestamp: delta.timestamp,
+        });
+
+        addTranscriptAndMaybeInfer(
+          socket.activeSessionId,
+          socket.userId!,
+          delta.text,
+          delta.speaker,
+          io,
+        ).catch((err) => console.error("Inference error:", err));
+      }
+    },
+    onError: (error: Error) => {
+      socket.emit("error", { message: `Transcription error: ${error.message}` });
+    },
+  };
+}
+
 export function setupWebSocket(httpServer: HttpServer): Server {
   const io = new Server(httpServer, {
     cors: {
@@ -72,6 +118,29 @@ export function setupWebSocket(httpServer: HttpServer): Server {
       }
     });
 
+    // --- session:prepare (pre-warm Deepgram connection) ---
+    socket.on("session:prepare", async (data: { modeId?: string }) => {
+      try {
+        const modeId = data.modeId ?? "meeting";
+
+        // Close any existing Deepgram session
+        socket.deepgramSession?.close();
+
+        // Pre-warm Deepgram connection
+        const handler = createTranscriptHandler(socket, io);
+        socket.deepgramSession = createDeepgramSession(
+          handler.onTranscript,
+          handler.onError,
+        );
+
+        socket.emit("session:prepared", { modeId, ready: true });
+      } catch (err) {
+        socket.emit("error", {
+          message: err instanceof Error ? err.message : "Failed to prepare session",
+        });
+      }
+    });
+
     // --- New: session:start-live (with mode and Deepgram) ---
     socket.on("session:start-live", async (data: { sessionId?: string; modeId?: string }) => {
       try {
@@ -105,48 +174,14 @@ export function setupWebSocket(httpServer: HttpServer): Server {
         // Initialize inference pipeline
         initSessionInference(sessionId, modeId);
 
-        // Start Deepgram session
-        socket.deepgramSession = createDeepgramSession(
-          (delta: TranscriptDelta) => {
-            // Emit transcript events
-            if (delta.isFinal) {
-              socket.emit("transcript:final", {
-                text: delta.text,
-                speaker: delta.speaker,
-                timestamp: delta.timestamp,
-                confidence: delta.confidence,
-              });
-            } else {
-              socket.emit("transcript:delta", {
-                text: delta.text,
-                isFinal: false,
-                speaker: delta.speaker,
-                timestamp: delta.timestamp,
-                confidence: delta.confidence,
-              });
-            }
-
-            // Feed to inference pipeline (only final segments)
-            if (delta.isFinal && sessionId) {
-              socket.transcriptBuffer?.push({
-                speaker: delta.speaker !== undefined ? `Speaker ${delta.speaker}` : "Speaker",
-                text: delta.text,
-                timestamp: delta.timestamp,
-              });
-
-              addTranscriptAndMaybeInfer(
-                sessionId,
-                socket.userId!,
-                delta.text,
-                delta.speaker,
-                io,
-              ).catch((err) => console.error("Inference error:", err));
-            }
-          },
-          (error: Error) => {
-            socket.emit("error", { message: `Transcription error: ${error.message}` });
-          },
-        );
+        // Reuse pre-warmed Deepgram session OR create new one
+        if (!socket.deepgramSession?.isOpen()) {
+          const handler = createTranscriptHandler(socket, io);
+          socket.deepgramSession = createDeepgramSession(
+            handler.onTranscript,
+            handler.onError,
+          );
+        }
 
         socket.emit("session:live-status", { isLive: true, modeId, sessionId });
       } catch (err) {
@@ -156,19 +191,30 @@ export function setupWebSocket(httpServer: HttpServer): Server {
       }
     });
 
-    // --- audio:chunk (enhanced to forward to Deepgram) ---
-    socket.on("audio:chunk", async (data: Buffer | { chunk: string }) => {
+    // --- audio:chunk (enhanced: binary support + Deepgram forwarding) ---
+    socket.on("audio:chunk", async (data: Buffer | ArrayBuffer | { chunk: string } | { data: string }) => {
       if (!socket.activeSessionId || !socket.transcriptBuffer) {
         socket.emit("error", { message: "No active session" });
         return;
       }
 
       try {
+        // Prefer binary, fallback to base64 for backward compat
+        let audioBuffer: Buffer;
+        if (Buffer.isBuffer(data)) {
+          audioBuffer = data;
+        } else if (data instanceof ArrayBuffer) {
+          audioBuffer = Buffer.from(data);
+        } else if (typeof data === "object" && "chunk" in data) {
+          audioBuffer = Buffer.from(data.chunk, "base64");
+        } else if (typeof data === "object" && "data" in data) {
+          audioBuffer = Buffer.from((data as { data: string }).data, "base64");
+        } else {
+          return; // unknown format, skip
+        }
+
         // If we have a Deepgram session, forward audio
         if (socket.deepgramSession?.isOpen()) {
-          const audioBuffer = Buffer.isBuffer(data)
-            ? data
-            : Buffer.from((data as { chunk: string }).chunk, "base64");
           socket.deepgramSession.send(audioBuffer);
           return;
         }

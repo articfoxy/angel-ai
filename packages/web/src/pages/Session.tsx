@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useSession } from '../hooks/useSession';
@@ -46,17 +46,13 @@ export function Session() {
     startLiveSession,
     stopLiveSession,
     switchMode,
+    prepareSession,
   } = useSession({ sessionId, token });
 
   const { startCapture, stopCapture, isCapturing, error: audioError } = useAudioCapture({
     onPCMFrame: (frame) => {
-      // Convert Int16Array to base64 for the socket
-      const bytes = new Uint8Array(frame.buffer);
-      let binary = '';
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      sendAudioChunk(btoa(binary));
+      // Send ArrayBuffer directly — Socket.IO handles binary automatically
+      sendPCMChunk(frame);
     },
   });
 
@@ -95,6 +91,13 @@ export function Session() {
       switchMode(newMode);
     }
   }, [state, switchMode]);
+
+  // Pre-warm Deepgram connection when mode selector renders
+  useEffect(() => {
+    if (selectedMode) {
+      prepareSession(selectedMode);
+    }
+  }, [selectedMode, prepareSession]);
 
   const currentState = state as string;
   const isActive = currentState === 'recording' || currentState === 'processing';

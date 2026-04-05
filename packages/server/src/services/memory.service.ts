@@ -1,13 +1,37 @@
 import { prisma } from "../lib/prisma.js";
 import { config } from "../config/index.js";
 
+// Simple embedding cache — keyed by truncated text hash
+const embeddingCache = new Map<string, { embedding: number[]; timestamp: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_CACHE_SIZE = 100;
+
+function getEmbeddingCacheKey(text: string): string {
+  // Use first 200 chars as cache key (covers most inference windows)
+  const truncated = text.slice(0, 200);
+  let hash = 0;
+  for (let i = 0; i < truncated.length; i++) {
+    const char = truncated.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return hash.toString(36);
+}
+
 /**
  * Generate an embedding using OpenAI's text-embedding-3-small (1536 dims).
- * Returns null if OPENAI_API_KEY is not set.
+ * Returns null if OPENAI_API_KEY is not set. Uses an in-memory LRU cache.
  */
 async function generateEmbedding(text: string): Promise<number[] | null> {
   const apiKey = config.ai.openaiApiKey;
   if (!apiKey) return null;
+
+  // Check cache
+  const cacheKey = getEmbeddingCacheKey(text);
+  const cached = embeddingCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.embedding;
+  }
 
   try {
     const response = await fetch("https://api.openai.com/v1/embeddings", {
@@ -28,7 +52,17 @@ async function generateEmbedding(text: string): Promise<number[] | null> {
     }
 
     const data = (await response.json()) as { data: Array<{ embedding: number[] }> };
-    return data.data[0].embedding;
+    const embedding = data.data[0].embedding;
+
+    // Store in cache
+    if (embeddingCache.size >= MAX_CACHE_SIZE) {
+      // Evict oldest entry
+      const oldestKey = embeddingCache.keys().next().value;
+      if (oldestKey !== undefined) embeddingCache.delete(oldestKey);
+    }
+    embeddingCache.set(cacheKey, { embedding, timestamp: Date.now() });
+
+    return embedding;
   } catch (err) {
     console.error("Failed to generate embedding:", err);
     return null;
