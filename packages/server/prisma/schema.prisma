@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String?
+  preferences  Json?     @default("{}")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  sessions     Session[]
+  memories     Memory[]
+  actions      Action[]
+  digests      Digest[]
+}
+
+model Session {
+  id           String        @id @default(cuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id])
+  title        String?
+  mode         String        @default("conversation")
+  status       String        @default("active")
+  startedAt    DateTime      @default(now())
+  endedAt      DateTime?
+  transcript   Json?
+  summary      Json?
+  participants Json?
+  keyFacts     Json?
+  promises     Json?
+  actionItems  Json?
+  risks        Json?
+  whisperCards WhisperCard[]
+  actions      Action[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([userId, startedAt])
+}
+
+model Memory {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  type            String
+  name            String
+  content         Json
+  tags            String[]
+  sourceSessionId String?
+  lastMentioned   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId, type])
+  @@index([userId, name])
+}
+
+model WhisperCard {
+  id         String   @id @default(cuid())
+  sessionId  String
+  session    Session  @relation(fields: [sessionId], references: [id])
+  type       String
+  content    String
+  confidence Float
+  shown      Boolean  @default(false)
+  helpful    Boolean?
+  createdAt  DateTime @default(now())
+}
+
+model Action {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  sessionId String?
+  session   Session? @relation(fields: [sessionId], references: [id])
+  type      String
+  status    String   @default("draft")
+  input     String
+  output    Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+}
+
+model Digest {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  date      DateTime @db.Date
+  content   Json
+  opened    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, date])
+}
