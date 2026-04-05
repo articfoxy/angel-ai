@@ -34,8 +34,9 @@ export async function createMemory(
     data: {
       userId,
       type: data.type,
+      title: data.name,
       name: data.name,
-      content: data.content,
+      content: JSON.stringify(data.content),
       tags: data.tags || [],
       sourceSessionId: data.sourceSessionId,
       lastMentioned: new Date(),
