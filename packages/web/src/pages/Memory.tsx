@@ -1,34 +1,64 @@
 import { useState, useEffect } from 'react';
-import { Search, Loader, Brain, ArrowLeft, X, Clock, Link } from 'lucide-react';
-import { PersonCard } from '../components/PersonCard';
+import { Search, Loader, Brain, ArrowLeft, X, Clock, Link, Trash2 } from 'lucide-react';
 import { api } from '../services/api';
-import type { Memory as MemoryType } from '../types';
+import type { Memory as MemoryType, MemoryStats } from '../types';
 
 const filterTabs = [
   { value: 'all', label: 'All' },
   { value: 'person', label: 'People' },
-  { value: 'company', label: 'Companies' },
   { value: 'project', label: 'Projects' },
-  { value: 'idea', label: 'Ideas' },
   { value: 'commitment', label: 'Commitments' },
+  { value: 'idea', label: 'Ideas' },
+  { value: 'company', label: 'Companies' },
 ];
+
+const typeIcons: Record<string, string> = {
+  person: '👤',
+  company: '🏢',
+  project: '📋',
+  idea: '💡',
+  commitment: '✅',
+  preference: '⚙️',
+};
+
+const typeColors: Record<string, string> = {
+  person: 'bg-primary/10 text-primary border-primary/20',
+  company: 'bg-success/10 text-success border-success/20',
+  project: 'bg-warning/10 text-warning border-warning/20',
+  idea: 'bg-[#ec4899]/10 text-[#ec4899] border-[#ec4899]/20',
+  commitment: 'bg-success/10 text-success border-success/20',
+  preference: 'bg-text-secondary/10 text-text-secondary border-text-secondary/20',
+};
+
+function formatLastMentioned(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
 
 const demoMemories: MemoryType[] = [
   {
     id: '1',
     type: 'person',
-    name: 'Alex Chen',
-    content: 'Lead designer working on the mobile app redesign. Prefers async communication.',
-    lastMentioned: new Date(Date.now() - 86400000).toISOString(),
+    name: 'Sarah Chen',
+    content: 'Q3 budget concerns, vendor evaluation lead. Prefers morning meetings.',
+    lastMentioned: new Date(Date.now() - 172800000).toISOString(),
     sessionIds: ['s1', 's2'],
   },
   {
     id: '2',
-    type: 'company',
-    name: 'Acme Corp',
-    content: 'Potential client for enterprise deal. Main contact is Sarah Johnson.',
-    lastMentioned: new Date(Date.now() - 172800000).toISOString(),
-    sessionIds: ['s3'],
+    type: 'person',
+    name: 'Alex Chen',
+    content: 'Lead designer working on the mobile app redesign. Prefers async communication.',
+    lastMentioned: new Date(Date.now() - 86400000).toISOString(),
+    sessionIds: ['s1', 's2'],
   },
   {
     id: '3',
@@ -40,35 +70,53 @@ const demoMemories: MemoryType[] = [
   },
   {
     id: '4',
-    type: 'idea',
-    name: 'AI Meeting Summary',
-    content: 'Automatically generate meeting summaries and action items using GPT-4.',
-    lastMentioned: new Date(Date.now() - 259200000).toISOString(),
-    sessionIds: ['s5'],
+    type: 'commitment',
+    name: 'Send proposal to Mike',
+    content: 'Committed during Monday standup. Due by end of week.',
+    lastMentioned: new Date(Date.now() - 86400000).toISOString(),
+    sessionIds: ['s3'],
   },
   {
     id: '5',
-    type: 'commitment',
-    name: 'Weekly Check-in',
-    content: 'Promised to have weekly 30-min check-ins with design team every Monday.',
-    lastMentioned: new Date(Date.now() - 604800000).toISOString(),
-    sessionIds: ['s2'],
+    type: 'idea',
+    name: 'Cross-team retro format',
+    content: 'Try a cross-team retrospective next quarter to share learnings.',
+    lastMentioned: new Date(Date.now() - 259200000).toISOString(),
+    sessionIds: ['s5'],
   },
 ];
 
+const demoStats: MemoryStats = {
+  people: 47,
+  projects: 12,
+  commitments: 89,
+  saves: 5,
+  total: 153,
+};
+
 export function Memory() {
   const [memories, setMemories] = useState<MemoryType[]>([]);
+  const [stats, setStats] = useState<MemoryStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState('all');
   const [selectedMemory, setSelectedMemory] = useState<MemoryType | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   useEffect(() => {
-    api
-      .getMemories(activeFilter, search)
+    api.getMemoryStats().then(setStats).catch(() => setStats(demoStats));
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+
+    const fetchMemories = search.length >= 2
+      ? api.searchMemories(search)
+      : api.getMemories(activeFilter, search);
+
+    fetchMemories
       .then(setMemories)
       .catch(() => {
-        // Demo mode
         let filtered = demoMemories;
         if (activeFilter !== 'all') {
           filtered = filtered.filter((m) => m.type === activeFilter);
@@ -86,6 +134,22 @@ export function Memory() {
       .finally(() => setLoading(false));
   }, [activeFilter, search]);
 
+  const handleDelete = async (id: string) => {
+    setDeleting(id);
+    try {
+      await api.deleteMemory(id);
+      setMemories((prev) => prev.filter((m) => m.id !== id));
+      if (selectedMemory?.id === id) setSelectedMemory(null);
+    } catch {
+      // Demo mode: remove locally
+      setMemories((prev) => prev.filter((m) => m.id !== id));
+      if (selectedMemory?.id === id) setSelectedMemory(null);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  // Detail view
   if (selectedMemory) {
     return (
       <div className="flex-1 overflow-y-auto pb-24">
@@ -96,11 +160,22 @@ export function Memory() {
           >
             <ArrowLeft size={20} />
           </button>
-          <h1 className="text-base font-semibold text-text">{selectedMemory.name}</h1>
+          <h1 className="text-base font-semibold text-text flex-1">{selectedMemory.name}</h1>
+          <button
+            onClick={() => handleDelete(selectedMemory.id)}
+            className="p-2 text-danger/60 hover:text-danger rounded-lg"
+          >
+            <Trash2 size={18} />
+          </button>
         </div>
 
         <div className="px-5 py-4">
-          <div className="inline-flex items-center gap-1.5 bg-primary/10 text-primary text-xs px-2.5 py-1 rounded-full mb-4">
+          <div
+            className={`inline-flex items-center gap-1.5 border text-xs px-2.5 py-1 rounded-full mb-4 ${
+              typeColors[selectedMemory.type] || ''
+            }`}
+          >
+            <span>{typeIcons[selectedMemory.type]}</span>
             <span className="capitalize">{selectedMemory.type}</span>
           </div>
 
@@ -166,6 +241,21 @@ export function Memory() {
         </div>
       </div>
 
+      {/* Stats bar */}
+      {stats && (
+        <div className="px-5 pb-3">
+          <div className="flex items-center gap-2 text-xs text-text-tertiary flex-wrap">
+            <span>👤 {stats.people} people</span>
+            <span className="text-border">·</span>
+            <span>📋 {stats.projects} projects</span>
+            <span className="text-border">·</span>
+            <span>✅ {stats.commitments} commitments</span>
+            <span className="text-border">·</span>
+            <span>✨ {stats.saves} saves</span>
+          </div>
+        </div>
+      )}
+
       {/* Filter tabs */}
       <div className="px-5 pb-3 overflow-x-auto">
         <div className="flex gap-2">
@@ -185,7 +275,7 @@ export function Memory() {
         </div>
       </div>
 
-      {/* Memory grid */}
+      {/* Memory list */}
       <div className="px-5">
         {loading ? (
           <div className="flex justify-center py-12">
@@ -202,11 +292,34 @@ export function Memory() {
         ) : (
           <div className="space-y-2">
             {memories.map((memory) => (
-              <PersonCard
+              <button
                 key={memory.id}
-                memory={memory}
-                onClick={setSelectedMemory}
-              />
+                onClick={() => setSelectedMemory(memory)}
+                className="w-full text-left bg-surface rounded-xl px-4 py-3 hover:bg-surface-hover transition-colors flex items-start gap-3"
+              >
+                <span className="text-lg mt-0.5">{typeIcons[memory.type] || '📝'}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium text-text truncate">{memory.name}</p>
+                    <span className="text-[10px] text-text-tertiary shrink-0">
+                      {formatLastMentioned(memory.lastMentioned)}
+                    </span>
+                  </div>
+                  <p className="text-xs text-text-secondary mt-0.5 line-clamp-2">
+                    {memory.content}
+                  </p>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(memory.id);
+                  }}
+                  className="p-1.5 text-text-tertiary hover:text-danger shrink-0 rounded-lg hover:bg-danger/10 transition-colors"
+                  disabled={deleting === memory.id}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </button>
             ))}
           </div>
         )}

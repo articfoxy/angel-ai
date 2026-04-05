@@ -9,6 +9,9 @@ import {
   TrendingUp,
   Loader,
   FileText,
+  Flame,
+  MessageSquare,
+  Mail,
 } from 'lucide-react';
 import { api } from '../services/api';
 import type { Digest as DigestType, DigestItem } from '../types';
@@ -29,6 +32,8 @@ const demoDigest: DigestType = {
   id: 'demo',
   userId: 'demo',
   date: toDateString(new Date()),
+  streak: 7,
+  sessionsToday: 3,
   keyMoments: [
     {
       id: '1',
@@ -71,6 +76,12 @@ const demoDigest: DigestType = {
       content: 'Consider adding voice commands for hands-free operation during walks',
       sessionId: 's5',
       sessionTitle: 'Solo Brainstorm',
+    },
+  ],
+  saves: [
+    {
+      id: '7',
+      content: 'Reminded about Sarah\'s Q3 concern before meeting',
     },
   ],
 };
@@ -125,7 +136,6 @@ export function Digest() {
       .getDigest(toDateString(currentDate))
       .then(setDigest)
       .catch(() => {
-        // Demo: show demo digest for today, null for other days
         const isToday =
           toDateString(currentDate) === toDateString(new Date());
         setDigest(isToday ? demoDigest : null);
@@ -159,7 +169,6 @@ export function Digest() {
       const d = await api.generateDigest(toDateString(currentDate));
       setDigest(d);
     } catch {
-      // Demo mode
       setDigest(demoDigest);
     } finally {
       setGenerating(false);
@@ -233,18 +242,34 @@ export function Digest() {
         </div>
       ) : (
         <>
+          {/* Quick stats */}
+          <div className="px-5 py-3 flex items-center gap-4 text-xs text-text-secondary">
+            {digest.streak != null && (
+              <span className="flex items-center gap-1">
+                <Flame size={14} className="text-orange-500" />
+                {digest.streak} day streak
+              </span>
+            )}
+            {digest.sessionsToday != null && (
+              <span className="flex items-center gap-1">
+                <MessageSquare size={14} className="text-primary" />
+                {digest.sessionsToday} sessions today
+              </span>
+            )}
+          </div>
+
+          <DigestSection
+            title="Commitments Due"
+            icon={AlertCircle}
+            iconColor="text-warning"
+            items={digest.followUps}
+            onItemClick={handleItemClick}
+          />
           <DigestSection
             title="Key Moments"
             icon={Sparkles}
             iconColor="text-primary"
             items={digest.keyMoments}
-            onItemClick={handleItemClick}
-          />
-          <DigestSection
-            title="Follow-ups Due"
-            icon={AlertCircle}
-            iconColor="text-warning"
-            items={digest.followUps}
             onItemClick={handleItemClick}
           />
           <DigestSection
@@ -261,6 +286,28 @@ export function Digest() {
             items={digest.ideas}
             onItemClick={handleItemClick}
           />
+
+          {/* Angel Saves */}
+          {digest.saves && digest.saves.length > 0 && (
+            <DigestSection
+              title="Angel Saves Today"
+              icon={Sparkles}
+              iconColor="text-cyan-500"
+              items={digest.saves}
+              onItemClick={handleItemClick}
+            />
+          )}
+
+          {/* Generate follow-up emails */}
+          <div className="px-5 py-4">
+            <button
+              onClick={() => {}}
+              className="w-full bg-surface border border-border rounded-xl px-4 py-3 flex items-center justify-center gap-2 hover:bg-surface-hover transition-colors"
+            >
+              <Mail size={16} className="text-primary" />
+              <span className="text-sm font-medium text-text">Generate Follow-up Emails</span>
+            </button>
+          </div>
         </>
       )}
     </div>

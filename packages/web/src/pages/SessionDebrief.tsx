@@ -10,15 +10,38 @@ import {
   ClipboardList,
   Loader,
   Sparkles,
+  Clock,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { ActionPanel } from '../components/ActionPanel';
-import type { Session, Action } from '../types';
+import { ANGEL_MODES } from '../components/ModeSelector';
+import type { Session, Action, WhisperCard } from '../types';
+
+function formatTimestamp(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+const whisperTypeIcons: Record<string, string> = {
+  context: '🔍',
+  question: '❓',
+  commitment: '✅',
+  fact_check: '📊',
+  nudge: '🔔',
+  action: '⚡',
+  suggestion: '💡',
+  reminder: '🔔',
+  insight: '✨',
+};
 
 export function SessionDebrief() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [session, setSession] = useState<Session | null>(null);
+  const [whispers, setWhispers] = useState<WhisperCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionPanel, setActionPanel] = useState<{
     type: string;
@@ -29,23 +52,34 @@ export function SessionDebrief() {
 
   useEffect(() => {
     if (!id) return;
-    api
-      .getSession(id)
-      .then(setSession)
-      .catch(() => {
+
+    const fetchData = async () => {
+      try {
+        const [sess, cards] = await Promise.all([
+          api.getSession(id),
+          api.getSessionWhispers(id).catch(() => []),
+        ]);
+        setSession(sess);
+        setWhispers(cards);
+      } catch {
         // Demo: show placeholder data
         setSession({
           id: id,
           userId: 'demo',
-          mode: 'conversation',
+          mode: 'meeting',
+          modeId: 'meeting',
           status: 'completed',
           title: 'Demo Session',
           startedAt: new Date().toISOString(),
           endedAt: new Date().toISOString(),
           duration: 1200,
-          transcript: [],
+          transcript: [
+            { id: '1', speaker: 'Speaker 1', text: 'We need to finalize the Q3 budget by Friday.', timestamp: 12 },
+            { id: '2', speaker: 'Speaker 2', text: 'I think we should also consider the vendor evaluation.', timestamp: 45 },
+            { id: '3', speaker: 'Speaker 1', text: 'Good point. Sarah mentioned Q3 concerns last time.', timestamp: 78 },
+          ],
           summary:
-            'This is a demo session. When connected to a backend, this will show the AI-generated summary of your conversation including key topics discussed and decisions made.',
+            'Discussed project timeline for Q2, design direction, and budget approval process. Key decisions were made about vendor evaluation and team scheduling.',
           participants: [
             { name: 'You', role: 'Host' },
             { name: 'Alex Chen', role: 'Designer' },
@@ -60,28 +94,21 @@ export function SessionDebrief() {
             'Schedule follow-up with engineering',
           ],
           actionItems: [
-            {
-              id: '1',
-              text: 'Send updated project timeline to the team',
-              completed: false,
-              assignee: 'You',
-            },
-            {
-              id: '2',
-              text: 'Review design mockups',
-              completed: false,
-              assignee: 'Alex',
-            },
-            {
-              id: '3',
-              text: 'Book meeting room for next Wednesday',
-              completed: true,
-              assignee: 'You',
-            },
+            { id: '1', text: 'Send updated project timeline to the team', completed: false, assignee: 'You' },
+            { id: '2', text: 'Review design mockups', completed: false, assignee: 'Alex' },
+            { id: '3', text: 'Book meeting room for next Wednesday', completed: true, assignee: 'You' },
           ],
         });
-      })
-      .finally(() => setLoading(false));
+        setWhispers([
+          { id: 'w1', sessionId: id, type: 'context', content: 'Last met Sarah 2 weeks ago - she raised Q3 budget concerns', createdAt: new Date().toISOString(), feedback: 'positive' },
+          { id: 'w2', sessionId: id, type: 'commitment', content: 'You committed to sending mockups by Friday', createdAt: new Date().toISOString(), acknowledged: true },
+        ]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
   }, [id]);
 
   const handleToggleAction = (actionId: string) => {
@@ -101,7 +128,6 @@ export function SessionDebrief() {
       const action = await api.generateAction(id!, type);
       setGeneratedAction(action);
     } catch {
-      // Demo mode
       setGeneratedAction({
         id: 'demo-action',
         sessionId: id!,
@@ -149,6 +175,8 @@ export function SessionDebrief() {
     );
   }
 
+  const modeInfo = ANGEL_MODES.find((m) => m.id === (session.modeId || session.mode));
+
   return (
     <div className="flex-1 overflow-y-auto pb-24">
       {/* Header */}
@@ -159,7 +187,7 @@ export function SessionDebrief() {
         >
           <ArrowLeft size={20} />
         </button>
-        <div>
+        <div className="flex-1">
           <h1 className="text-base font-semibold text-text">
             {session.title || 'Session Debrief'}
           </h1>
@@ -172,6 +200,12 @@ export function SessionDebrief() {
             })}
           </p>
         </div>
+        {modeInfo && (
+          <span className="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-2.5 py-1 text-xs text-text-secondary">
+            <span>{modeInfo.icon}</span>
+            <span>{modeInfo.name}</span>
+          </span>
+        )}
       </div>
 
       {/* Summary */}
@@ -233,7 +267,7 @@ export function SessionDebrief() {
         </div>
       )}
 
-      {/* Promises */}
+      {/* Promises / Commitments */}
       {session.promises.length > 0 && (
         <div className="px-5 py-4">
           <h2 className="text-sm font-semibold text-text mb-3">
@@ -285,6 +319,62 @@ export function SessionDebrief() {
                   )}
                 </div>
               </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Whisper Cards Review */}
+      {whispers.length > 0 && (
+        <div className="px-5 py-4">
+          <h2 className="text-sm font-semibold text-text mb-3">Angel Whispers</h2>
+          <div className="space-y-2">
+            {whispers.map((w) => (
+              <div
+                key={w.id}
+                className="bg-surface rounded-xl px-4 py-3 flex items-start gap-3"
+              >
+                <span className="text-base mt-0.5">{whisperTypeIcons[w.type] || '💡'}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-text leading-relaxed">{w.content}</p>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    {w.feedback === 'positive' && (
+                      <span className="inline-flex items-center gap-1 text-[10px] text-success">
+                        <ThumbsUp size={10} /> Helpful
+                      </span>
+                    )}
+                    {w.feedback === 'negative' && (
+                      <span className="inline-flex items-center gap-1 text-[10px] text-text-tertiary">
+                        <ThumbsDown size={10} /> Not useful
+                      </span>
+                    )}
+                    {w.acknowledged && (
+                      <span className="text-[10px] text-success">Acknowledged</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Full Transcript */}
+      {session.transcript.length > 0 && (
+        <div className="px-5 py-4">
+          <h2 className="text-sm font-semibold text-text mb-3">Full Transcript</h2>
+          <div className="bg-surface rounded-xl p-4 space-y-3 max-h-80 overflow-y-auto">
+            {session.transcript.map((seg, i) => (
+              <div key={seg.id || i}>
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-xs font-medium text-primary">{seg.speaker}</span>
+                  <span className="text-[10px] text-text-tertiary flex items-center gap-1">
+                    <Clock size={10} />
+                    {formatTimestamp(seg.timestamp)}
+                  </span>
+                </div>
+                <p className="text-sm text-text-secondary leading-relaxed">{seg.text}</p>
+              </div>
             ))}
           </div>
         </div>
