@@ -179,22 +179,32 @@ export function setupWebSocket(httpServer: HttpServer): Server {
           "Speaker 1",
         );
 
-          // If mock mode returned a delta, emit it
-          if (mockDelta) {
-            socket.emit("transcript:delta", {
-              sessionId: socket.activeSessionId,
-              ...mockDelta,
-            });
+        socket.transcriptBuffer.push(segment);
 
-            if (mockDelta.isFinal) {
-              socket.emit("transcript:final", {
-                sessionId: socket.activeSessionId,
-                text: mockDelta.text,
-                speaker: mockDelta.speaker !== undefined ? `Speaker ${mockDelta.speaker}` : "Speaker 1",
-                timestamp: mockDelta.timestamp,
-                confidence: mockDelta.confidence,
-              });
+        socket.emit("transcript:delta", {
+          sessionId: socket.activeSessionId,
+          text: segment.text,
+          isFinal: false,
+          speaker: 0,
+          timestamp: segment.timestamp,
+          confidence: 0.9,
+        });
 
+        socket.emit("transcript:final", {
+          sessionId: socket.activeSessionId,
+          text: segment.text,
+          speaker: segment.speaker,
+          timestamp: segment.timestamp,
+          confidence: 0.9,
+        });
+
+        socket.emit("transcript:update", {
+          sessionId: socket.activeSessionId,
+          segment,
+          totalSegments: socket.transcriptBuffer.length,
+        });
+
+        // Generate whisper cards every 10 segments
         if (socket.transcriptBuffer.length % 10 === 0) {
           const transcriptText = socket.transcriptBuffer
             .map((s) => `${s.speaker}: ${s.text}`)
@@ -206,31 +216,11 @@ export function setupWebSocket(httpServer: HttpServer): Server {
             socket.userId!,
           );
 
-          socket.transcriptBuffer.push(segment);
-
-          socket.emit("transcript:update", {
-            sessionId: socket.activeSessionId,
-            segment,
-            totalSegments: socket.transcriptBuffer.length,
-          });
-
-          if (socket.transcriptBuffer.length % 10 === 0) {
-            const transcriptText = socket.transcriptBuffer
-              .map((s) => `${s.speaker}: ${s.text}`)
-              .join("\n");
-
-            const cards = await generateWhisperCards(
-              socket.activeSessionId,
-              transcriptText,
-              socket.userId!
-            );
-
-            for (const card of cards) {
-              socket.emit("whisper:card", {
-                sessionId: socket.activeSessionId,
-                card,
-              });
-            }
+          for (const card of cards) {
+            socket.emit("whisper:card", {
+              sessionId: socket.activeSessionId,
+              card,
+            });
           }
         }
       } catch (err) {
@@ -389,16 +379,11 @@ export function setupWebSocket(httpServer: HttpServer): Server {
     socket.on("disconnect", () => {
       // Clean up Deepgram connection
       socket.deepgramSession?.close();
+      socket.deepgramSession = undefined;
       if (socket.activeSessionId) {
         clearSessionInference(socket.activeSessionId);
       }
       console.log(`Client disconnected: ${socket.userId}`);
-
-      // Clean up active sessions
-      if (socket.activeSessionId) {
-        stopTranscription(socket.activeSessionId);
-        stopInferenceLoop(socket.activeSessionId);
-      }
     });
   });
 

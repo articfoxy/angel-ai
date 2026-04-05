@@ -8,12 +8,9 @@ import {
   Sparkles,
   ChevronRight,
   Loader,
-  Flame,
-  Sparkles,
   TrendingUp,
 } from 'lucide-react';
 import { SessionCard } from '../components/SessionCard';
-import { ANGEL_MODES } from '../components/ModeSelector';
 import { api } from '../services/api';
 import { ANGEL_MODES, type Session, type ActionItem, type DashboardStats, type Streak, type MemoryStats } from '../types';
 
@@ -86,9 +83,6 @@ export function Dashboard() {
 
   const recentSessions = sessions.slice(0, 5);
   const firstName = user?.name?.split(' ')[0] || 'there';
-  const streak = dashStats?.streak?.current || 0;
-  const saves = dashStats?.saves || 0;
-  const memStats = dashStats?.memoryStats;
 
   return (
     <div className="flex-1 overflow-y-auto pb-24">

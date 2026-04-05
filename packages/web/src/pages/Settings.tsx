@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { ANGEL_MODES } from '../components/ModeSelector';
 import { api } from '../services/api';
 import {
   User,
@@ -13,8 +12,7 @@ import {
   Globe,
 } from 'lucide-react';
 import { ModeSelector, getModeById } from '../components/ModeSelector';
-import { api } from '../services/api';
-import type { UserPreferences } from '../types';
+import { ANGEL_MODES, type UserPreferences } from '../types';
 
 const whisperLevels = [
   { value: 'silent', label: 'Silent', desc: 'No whispers during sessions' },

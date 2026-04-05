@@ -91,12 +91,11 @@ const demoStats: MemoryStats = { people: 47, projects: 12, commitments: 89, save
 
 export function Memory() {
   const [memories, setMemories] = useState<MemoryType[]>([]);
-  const [stats, setStats] = useState<MemoryStats | null>(null);
+  const [stats, setStats] = useState<MemoryStats>(demoStats);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState('all');
   const [selectedMemory, setSelectedMemory] = useState<MemoryType | null>(null);
-  const [stats, setStats] = useState<MemoryStats>(demoStats);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   useEffect(() => {
@@ -210,19 +209,6 @@ export function Memory() {
       {/* Header */}
       <div className="px-5 pt-12 pb-2">
         <h1 className="text-xl font-bold text-text">Memory</h1>
-      </div>
-
-      {/* Stats bar */}
-      <div className="px-5 py-2">
-        <div className="bg-surface rounded-xl px-4 py-2.5 flex items-center gap-3 text-xs text-text-secondary overflow-x-auto">
-          <span className="whitespace-nowrap">{stats.people} people</span>
-          <span className="text-border">&middot;</span>
-          <span className="whitespace-nowrap">{stats.projects} projects</span>
-          <span className="text-border">&middot;</span>
-          <span className="whitespace-nowrap">{stats.commitments} commitments</span>
-          <span className="text-border">&middot;</span>
-          <span className="whitespace-nowrap">{stats.saves} saves</span>
-        </div>
       </div>
 
       {/* Search */}

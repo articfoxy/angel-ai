@@ -15,7 +15,7 @@ export async function generateWhisperCards(
   });
 
   const memoriesForProvider = memories.map((m) => ({
-    name: m.name || "Unknown",
+    name: m.title || "Unknown",
     content: m.content,
   }));
 
