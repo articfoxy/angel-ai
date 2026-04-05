@@ -5,7 +5,7 @@ import { useSession } from '../hooks/useSession';
 import { useAudioCapture } from '../hooks/useAudioCapture';
 import { LiveTranscript } from '../components/LiveTranscript';
 import { WhisperStack } from '../components/WhisperStack';
-import { ModeSelector } from '../components/ModeSelector';
+import { ModeSelector, getModeById } from '../components/ModeSelector';
 import { ModePill } from '../components/ModePill';
 import { ThinkingIndicator } from '../components/ThinkingIndicator';
 import { api } from '../services/api';
@@ -28,6 +28,7 @@ export function Session() {
   const navigate = useNavigate();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [mode, setMode] = useState('meeting');
+  const [selectedMode, setSelectedMode] = useState<string>('meeting');
 
   const {
     state,
@@ -113,7 +114,7 @@ export function Session() {
           </div>
           <p className="text-sm text-text-secondary mb-6">Choose your Angel mode</p>
           <ModeSelector
-            selectedModeId={selectedMode.id}
+            selectedMode={selectedMode}
             onSelect={(mode) => setSelectedMode(mode)}
           />
         </div>
@@ -131,8 +132,8 @@ export function Session() {
             onClick={handleStartSession}
             className="w-full bg-primary hover:bg-primary-hover text-white font-semibold py-4 rounded-xl transition-colors flex items-center justify-center gap-2 text-base"
           >
-            <span>{selectedMode.icon}</span>
-            Start {selectedMode.name}
+            <span>{getModeById(selectedMode).icon}</span>
+            Start {getModeById(selectedMode).name}
           </button>
         </div>
       </div>

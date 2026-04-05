@@ -57,12 +57,6 @@ const demoDigest: DigestType = {
   saves: [
     { id: 'sv1', content: 'Reminded about Sarah\'s Q3 concern before meeting', sessionId: 's1', sessionTitle: 'Team Standup' },
   ],
-  saves: [
-    {
-      id: '7',
-      content: 'Reminded about Sarah\'s Q3 concern before meeting',
-    },
-  ],
 };
 
 interface DigestSectionProps {

@@ -98,7 +98,6 @@ export interface Digest {
   ideas: DigestItem[];
   commitments?: DigestItem[];
   saves?: DigestItem[];
-  streak?: number;
   sessionCount?: number;
 }
 
@@ -134,15 +133,6 @@ export const ANGEL_MODES: AngelMode[] = [
   { id: 'coach', name: 'Coach Angel', icon: '\uD83D\uDDE3\uFE0F', description: 'Speaking pace, filler words, communication tips', color: 'orange' },
   { id: 'builder', name: 'Builder Angel', icon: '\uD83D\uDD27', description: 'Technical fact checks, decision records', color: 'cyan' },
 ];
-
-// Memory Stats
-export interface MemoryStats {
-  people: number;
-  projects: number;
-  commitments: number;
-  saves: number;
-  total: number;
-}
 
 // Streak / Engagement
 export interface Streak {

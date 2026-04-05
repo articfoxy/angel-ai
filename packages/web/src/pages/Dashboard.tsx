@@ -9,6 +9,9 @@ import {
   ChevronRight,
   Loader,
   TrendingUp,
+  CheckCircle,
+  Circle,
+  FileText,
 } from 'lucide-react';
 import { SessionCard } from '../components/SessionCard';
 import { api } from '../services/api';

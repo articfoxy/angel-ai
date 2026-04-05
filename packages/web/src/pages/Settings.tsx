@@ -32,6 +32,7 @@ export function Settings() {
     autoDeleteDays: 30,
   });
   const [showModeSelector, setShowModeSelector] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.getPreferences().then(setPrefs).catch(() => {

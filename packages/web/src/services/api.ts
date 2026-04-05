@@ -7,7 +7,6 @@ import type {
   Digest,
   User,
   WhisperCard,
-  MemoryStats,
   Streak,
   DashboardStats,
   UserPreferences,
