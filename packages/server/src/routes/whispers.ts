@@ -6,23 +6,22 @@ import { authenticate, AuthRequest } from "../middleware/auth.js";
 const router = Router();
 router.use(authenticate);
 
-// GET /api/sessions/:id/whispers - get all whisper cards for a session
+// GET /api/sessions/:id/whispers — get all whisper cards for a session
 router.get("/sessions/:id/whispers", async (req: AuthRequest, res: Response, next) => {
   try {
-    const sessionId = String(req.params.id);
+    const sessionId = req.params.id as string;
 
-    // Verify session belongs to user
+    // Verify user owns the session
     const session = await prisma.session.findFirst({
       where: { id: sessionId, userId: req.userId! },
     });
-
     if (!session) {
       res.status(404).json({ success: false, error: "Session not found" });
       return;
     }
 
     const whispers = await prisma.whisperCard.findMany({
-      where: { sessionId },
+      where: { sessionId: sessionId },
       orderBy: { createdAt: "desc" },
     });
 
@@ -32,33 +31,36 @@ router.get("/sessions/:id/whispers", async (req: AuthRequest, res: Response, nex
   }
 });
 
+// PUT /api/whispers/:id/feedback — submit feedback
 const feedbackSchema = z.object({
   helpful: z.boolean(),
 });
 
-// PUT /api/whispers/:id/feedback - submit feedback
 router.put("/whispers/:id/feedback", async (req: AuthRequest, res: Response, next) => {
   try {
-    const id = String(req.params.id);
-    const { helpful } = feedbackSchema.parse(req.body);
+    const cardId = req.params.id as string;
+    const body = feedbackSchema.parse(req.body);
 
     const card = await prisma.whisperCard.findFirst({
-      where: { id, userId: req.userId! },
+      where: { id: cardId, userId: req.userId! },
     });
-
     if (!card) {
       res.status(404).json({ success: false, error: "Whisper card not found" });
       return;
     }
 
     const updated = await prisma.whisperCard.update({
-      where: { id },
+      where: { id: cardId },
       data: {
-        helpful,
-        status: helpful ? "helpful" : "not_helpful",
-        acknowledgedAt: new Date(),
+        status: body.helpful ? "helpful" : "not_helpful",
       },
     });
+
+    // If helpful, record as a save
+    if (body.helpful) {
+      const { recordSave } = await import("../services/engagement.service.js");
+      await recordSave(req.userId!, card.sessionId, "Whisper card marked helpful via API");
+    }
 
     res.json({ success: true, data: updated });
   } catch (err) {

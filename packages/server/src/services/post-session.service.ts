@@ -1,124 +1,162 @@
 import { Prisma } from "@prisma/client";
-import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
-import { getModeConfig } from "./modes.service.js";
+import { config } from "../config/index.js";
 import { extractAndStoreMemories } from "./memory.service.js";
-import { recordSessionActivity, recordSave } from "./engagement.service.js";
+import { recordSessionActivity } from "./engagement.service.js";
+import { getBuiltInModeConfig } from "./modes.service.js";
+import { getSessionTranscript, clearSessionInference } from "./inference.service.js";
 
 interface PostSessionResult {
-  summary: Record<string, unknown>;
+  sessionId: string;
+  summary: Record<string, unknown> | null;
   memoriesExtracted: number;
-  angelSaves: number;
+  savesDetected: number;
 }
 
-export async function processPostSession(
+/**
+ * Run post-session processing after a live session ends.
+ *
+ * Steps:
+ * 1. Save complete transcript to session record
+ * 2. Extract memories (people, companies, commitments, etc.)
+ * 3. Generate session summary based on mode
+ * 4. Update streak
+ * 5. Detect Angel Save moments
+ */
+export async function processSessionEnd(
   sessionId: string,
-  userId: string
+  userId: string,
+  modeId: string,
 ): Promise<PostSessionResult> {
-  const session = await prisma.session.findUnique({
-    where: { id: sessionId },
-    include: { whisperCards: true },
-  });
+  const transcript = getSessionTranscript(sessionId);
 
-  if (!session) {
-    throw new Error(`Session ${sessionId} not found`);
-  }
-
-  const transcript = session.transcript as Array<{ speaker: string; text: string }> | null;
-  const transcriptText = transcript
-    ? transcript.map((s) => `${s.speaker}: ${s.text}`).join("\n")
-    : "";
-
-  // 1. Extract and store memories
-  let memoriesExtracted = 0;
-  if (transcriptText) {
-    const extracted = await extractAndStoreMemories(userId, sessionId, transcriptText);
-    memoriesExtracted = extracted.length;
-  }
-
-  // 2. Generate session summary based on mode
-  const modeConfig = getModeConfig(session.modeId);
-  const summary = await generateModeSummary(transcriptText, modeConfig.postSessionOutputs, session.modeId);
-
-  // 3. Update session with summary
+  // 1. Mark session as processing
   await prisma.session.update({
     where: { id: sessionId },
     data: {
-      summary: summary as Prisma.InputJsonValue,
-      status: "completed",
-      endedAt: session.endedAt || new Date(),
+      status: "processing",
       isLive: false,
+      endedAt: new Date(),
+      transcript: transcript
+        ? [{ speaker: "transcript", text: transcript, timestamp: Date.now() }]
+        : undefined,
     },
   });
 
-  // 4. Update streak
-  await recordSessionActivity(userId);
-
-  // 5. Detect Angel Save moments
-  const helpfulCards = session.whisperCards.filter((c) => c.helpful === true);
-  let angelSaves = 0;
-  for (const card of helpfulCards) {
-    await recordSave(userId, sessionId, `Whisper card "${card.content}" was helpful`);
-    angelSaves++;
+  // 2. Extract and store memories
+  let memoriesExtracted = 0;
+  if (transcript) {
+    const memories = await extractAndStoreMemories(userId, sessionId, transcript);
+    memoriesExtracted = memories.length;
   }
 
+  // 3. Generate session summary based on mode
+  const modeConfig = getBuiltInModeConfig(modeId);
+  const summary = await generateSessionSummary(
+    transcript,
+    modeConfig?.postSessionOutputs ?? ["summary"],
+  );
+
+  // 4. Update session with summary and mark completed
+  await prisma.session.update({
+    where: { id: sessionId },
+    data: {
+      status: "completed",
+      summary: (summary ?? Prisma.DbNull) as Prisma.InputJsonValue,
+    },
+  });
+
+  // 5. Update streak
+  await recordSessionActivity(userId);
+
+  // 6. Detect Angel Save moments
+  const helpfulCards = await prisma.whisperCard.count({
+    where: {
+      sessionId,
+      status: "helpful",
+    },
+  });
+
+  if (helpfulCards > 0) {
+    await prisma.streak.upsert({
+      where: { userId },
+      create: { userId, totalSaves: helpfulCards },
+      update: { totalSaves: { increment: helpfulCards } },
+    });
+  }
+
+  // Cleanup inference state
+  clearSessionInference(sessionId);
+
   return {
+    sessionId,
     summary,
     memoriesExtracted,
-    angelSaves,
+    savesDetected: helpfulCards,
   };
 }
 
-async function generateModeSummary(
+/**
+ * Generate a mode-appropriate session summary.
+ */
+async function generateSessionSummary(
   transcript: string,
   outputTypes: string[],
-  modeId: string
-): Promise<Record<string, unknown>> {
-  if (!transcript) {
-    return { brief: "No transcript available", outputs: {} };
-  }
+): Promise<Record<string, unknown> | null> {
+  if (!transcript) return null;
 
-  if (!config.ai.openaiApiKey) {
-    // Mock summary
-    const outputs: Record<string, string> = {};
-    for (const outputType of outputTypes) {
-      outputs[outputType] = `[Mock ${outputType}] Generated from ${modeId} mode session`;
-    }
+  const apiKey = config.ai.openaiApiKey;
+  if (!apiKey) {
     return {
-      brief: `Session completed in ${modeId} mode`,
-      detailed: "This is a mock summary. Connect an OpenAI API key for real summaries.",
-      outputs,
+      summary: "Session completed. (AI summary unavailable — no API key configured)",
+      outputs: outputTypes.reduce(
+        (acc, t) => ({ ...acc, [t]: `Mock ${t} output` }),
+        {} as Record<string, string>,
+      ),
     };
   }
 
   try {
-    const { default: OpenAI } = await import("openai");
-    const client = new OpenAI({ apiKey: config.ai.openaiApiKey });
+    const outputInstructions = outputTypes
+      .map((t) => `- ${t}: Generate appropriate content for this output type`)
+      .join("\n");
 
-    const response = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `Generate a post-session summary. Include these output types: ${outputTypes.join(", ")}.
-Return JSON: {
-  "brief": "1-2 sentence summary",
-  "detailed": "detailed summary",
-  "outputs": { "${outputTypes[0]}": "...", ... }
-}`,
-        },
-        {
-          role: "user",
-          content: transcript,
-        },
-      ],
-      response_format: { type: "json_object" },
-      max_tokens: 2000,
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `Generate a post-session summary. Return a JSON object with these keys:
+- summary: A concise overall summary
+${outputInstructions}
+
+Be concise and actionable.`,
+          },
+          { role: "user", content: transcript },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.3,
+        max_tokens: 1000,
+      }),
     });
 
-    return JSON.parse(response.choices[0]?.message?.content || "{}");
+    if (!response.ok) {
+      console.error("Summary generation error:", response.statusText);
+      return { summary: "Session completed.", error: "Summary generation failed" };
+    }
+
+    const data = (await response.json()) as {
+      choices: Array<{ message: { content: string } }>;
+    };
+    return JSON.parse(data.choices[0].message.content);
   } catch (err) {
-    console.error("[PostSession] Summary generation failed:", err);
-    return { brief: "Summary generation failed", detailed: "" };
+    console.error("Summary generation failed:", err);
+    return { summary: "Session completed.", error: "Summary generation failed" };
   }
 }

@@ -1,126 +1,95 @@
-import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
-import { Prisma } from "@prisma/client";
+import { config } from "../config/index.js";
 
-interface MemoryCreateInput {
-  type: string;
-  title: string;
-  content: string;
-  metadata?: Record<string, unknown>;
-  sessionId?: string;
-  importance?: number;
-}
-
-interface MemorySearchResult {
-  id: string;
-  type: string;
-  title: string;
-  content: string;
-  metadata: unknown;
-  importance: number;
-  similarity?: number;
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
+/**
+ * Generate an embedding using OpenAI's text-embedding-3-small (1536 dims).
+ * Returns null if OPENAI_API_KEY is not set.
+ */
 async function generateEmbedding(text: string): Promise<number[] | null> {
-  if (!config.ai.openaiApiKey) {
-    return null;
-  }
+  const apiKey = config.ai.openaiApiKey;
+  if (!apiKey) return null;
 
   try {
-    const { default: OpenAI } = await import("openai");
-    const client = new OpenAI({ apiKey: config.ai.openaiApiKey });
-
-    const response = await client.embeddings.create({
-      model: "text-embedding-3-small",
-      input: text,
+    const response = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: text,
+      }),
     });
 
-    return response.data[0]?.embedding || null;
+    if (!response.ok) {
+      console.error("Embedding API error:", response.statusText);
+      return null;
+    }
+
+    const data = (await response.json()) as { data: Array<{ embedding: number[] }> };
+    return data.data[0].embedding;
   } catch (err) {
-    console.error("[Memory] Failed to generate embedding:", err);
+    console.error("Failed to generate embedding:", err);
     return null;
   }
 }
 
+/**
+ * Create a memory with an optional vector embedding.
+ */
 export async function createMemoryWithEmbedding(
   userId: string,
-  input: MemoryCreateInput
-): Promise<{ id: string }> {
-  const embedding = await generateEmbedding(`${input.title} ${input.content}`);
+  type: string,
+  title: string,
+  content: string,
+  metadata?: Record<string, unknown>,
+  sessionId?: string,
+) {
+  const embedding = await generateEmbedding(`${title}: ${content}`);
 
-  const memory = await prisma.memory.create({
+  if (embedding) {
+    const vectorStr = `[${embedding.join(",")}]`;
+    const result = await prisma.$queryRaw<Array<Record<string, unknown>>>`
+      INSERT INTO "Memory" ("id", "userId", "type", "title", "content", "embedding", "metadata", "sessionId", "createdAt", "updatedAt")
+      VALUES (gen_random_uuid(), ${userId}, ${type}, ${title}, ${content}, ${vectorStr}::vector, ${JSON.stringify(metadata ?? {})}::jsonb, ${sessionId ?? null}, NOW(), NOW())
+      RETURNING *
+    `;
+    return result[0];
+  }
+
+  return prisma.memory.create({
     data: {
       userId,
-      type: input.type,
-      title: input.title,
-      content: input.content,
-      embedding: embedding ?? undefined,
-      metadata: input.metadata as Prisma.JsonObject || undefined,
-      importance: input.importance ?? 0.5,
-      sessionId: input.sessionId,
-      tags: [],
-      name: input.title,
+      type,
+      title,
+      content,
+      metadata: (metadata ?? {}) as Record<string, string | number | boolean | null>,
+      sessionId,
     },
   });
-
-  return { id: memory.id };
 }
 
-export async function searchMemoriesByVector(
+/**
+ * Semantic search using pgvector <=> operator.
+ * Falls back to text search when embeddings are unavailable.
+ */
+export async function searchMemories(
   userId: string,
   query: string,
-  limit: number = 5
-): Promise<MemorySearchResult[]> {
+  limit = 5,
+): Promise<Array<Record<string, unknown>>> {
   const embedding = await generateEmbedding(query);
 
   if (embedding) {
-    try {
-      // Fetch recent memories with embeddings and compute cosine similarity in app code
-      const memories = await prisma.memory.findMany({
-        where: {
-          userId,
-          embedding: { not: Prisma.DbNull },
-        },
-        orderBy: { updatedAt: "desc" },
-        take: 1000,
-        select: {
-          id: true,
-          type: true,
-          title: true,
-          content: true,
-          metadata: true,
-          importance: true,
-          embedding: true,
-        },
-      });
-
-      const scored = memories
-        .map((m) => ({
-          id: m.id,
-          type: m.type,
-          title: m.title,
-          content: m.content,
-          metadata: m.metadata,
-          importance: m.importance,
-          similarity: cosineSimilarity(embedding, m.embedding as number[]),
-        }))
-        .sort((a, b) => b.similarity - a.similarity)
-        .slice(0, limit);
-
-      return scored;
-    } catch (err) {
-      console.error("[Memory] Vector search failed, falling back to text search:", err);
-    }
+    const vectorStr = `[${embedding.join(",")}]`;
+    return prisma.$queryRaw<Array<Record<string, unknown>>>`
+      SELECT *, embedding <=> ${vectorStr}::vector AS distance
+      FROM "Memory"
+      WHERE "userId" = ${userId}
+      ORDER BY distance
+      LIMIT ${limit}
+    `;
   }
 
   // Fallback: text-based search
@@ -134,118 +103,120 @@ export async function searchMemoriesByVector(
     },
     orderBy: { updatedAt: "desc" },
     take: limit,
-    select: {
-      id: true,
-      type: true,
-      title: true,
-      content: true,
-      metadata: true,
-      importance: true,
-    },
   });
 
-  return memories.map((m) => ({
-    ...m,
-    metadata: m.metadata,
-    importance: m.importance,
-  }));
+  return memories as unknown as Array<Record<string, unknown>>;
 }
 
+/**
+ * Get relevant memories for a transcript chunk by extracting key entities
+ * and performing vector searches.
+ */
 export async function getRelevantMemories(
   userId: string,
-  transcriptChunk: string
-): Promise<MemorySearchResult[]> {
-  // Extract potential entity names for targeted search
-  const results = await searchMemoriesByVector(userId, transcriptChunk, 5);
-  return results;
+  transcriptChunk: string,
+  limit = 5,
+): Promise<Array<Record<string, unknown>>> {
+  return searchMemories(userId, transcriptChunk, limit);
 }
 
+/**
+ * Extract and store memories from a completed session transcript.
+ * Uses GPT-4o-mini to extract people, companies, commitments, etc.
+ */
 export async function extractAndStoreMemories(
   userId: string,
   sessionId: string,
-  transcript: string
-): Promise<Array<{ id: string; type: string; title: string }>> {
-  const stored: Array<{ id: string; type: string; title: string }> = [];
+  transcript: string,
+): Promise<Array<Record<string, unknown>>> {
+  const apiKey = config.ai.openaiApiKey;
 
-  if (!config.ai.openaiApiKey) {
-    // Mock extraction
-    const mockMemories = [
-      { type: "concept", title: "Discussion Topic", content: "Key topic discussed in this session" },
-    ];
-
-    for (const mem of mockMemories) {
-      const result = await createMemoryWithEmbedding(userId, {
-        ...mem,
+  if (!apiKey) {
+    // Mock extraction: create a simple summary memory
+    const mem = await prisma.memory.create({
+      data: {
+        userId,
+        type: "concept",
+        title: "Session Notes",
+        content: transcript.slice(0, 500),
+        metadata: { source: "auto_extract", mock: true },
         sessionId,
-      });
-      stored.push({ id: result.id, type: mem.type, title: mem.title });
-    }
-
-    return stored;
+      },
+    });
+    return [mem as unknown as Record<string, unknown>];
   }
 
   try {
-    const { default: OpenAI } = await import("openai");
-    const client = new OpenAI({ apiKey: config.ai.openaiApiKey });
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `Extract notable entities from the conversation transcript. Return a JSON object with an "entities" array. Each entity should have:
+- type: one of "person", "company", "project", "concept", "commitment"
+- title: name or short label
+- content: a brief summary of what was mentioned about this entity
+- importance: 0-1 score
 
-    const response = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `Extract memorable entities from this transcript. Return JSON:
-{
-  "memories": [
-    {
-      "type": "person|company|project|concept|commitment",
-      "title": "short title",
-      "content": "detailed description",
-      "importance": 0.0-1.0
-    }
-  ]
-}
-Extract people mentioned, companies, projects discussed, key concepts, and commitments made. Be selective - only extract truly noteworthy items.`,
-        },
-        {
-          role: "user",
-          content: transcript,
-        },
-      ],
-      response_format: { type: "json_object" },
-      max_tokens: 2000,
+Only include entities that are meaningfully discussed or important. Return at most 10 entities.`,
+          },
+          { role: "user", content: transcript },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.3,
+      }),
     });
 
-    const parsed = JSON.parse(response.choices[0]?.message?.content || '{"memories":[]}');
-    const memories: Array<{
-      type: string;
-      title: string;
-      content: string;
-      importance?: number;
-    }> = Array.isArray(parsed.memories) ? parsed.memories : [];
-
-    for (const mem of memories) {
-      try {
-        const result = await createMemoryWithEmbedding(userId, {
-          type: mem.type,
-          title: mem.title,
-          content: mem.content,
-          importance: mem.importance,
-          sessionId,
-        });
-        stored.push({ id: result.id, type: mem.type, title: mem.title });
-      } catch (err) {
-        console.error("[Memory] Failed to store extracted memory:", err);
-      }
+    if (!response.ok) {
+      console.error("Memory extraction API error:", response.statusText);
+      return [];
     }
-  } catch (err) {
-    console.error("[Memory] Memory extraction failed:", err);
-  }
 
-  return stored;
+    const data = (await response.json()) as {
+      choices: Array<{ message: { content: string } }>;
+    };
+    const parsed = JSON.parse(data.choices[0].message.content) as {
+      entities?: Array<{
+        type: string;
+        title: string;
+        content: string;
+        importance?: number;
+      }>;
+    };
+
+    const entities = parsed.entities ?? [];
+    const created: Array<Record<string, unknown>> = [];
+
+    for (const entity of entities) {
+      const mem = await createMemoryWithEmbedding(
+        userId,
+        entity.type,
+        entity.title,
+        entity.content,
+        { source: "auto_extract", importance: entity.importance ?? 0.5 },
+        sessionId,
+      );
+      created.push(mem as Record<string, unknown>);
+    }
+
+    return created;
+  } catch (err) {
+    console.error("Memory extraction failed:", err);
+    return [];
+  }
 }
 
-export async function updateMemoryAccess(memoryId: string): Promise<void> {
-  await prisma.memory.update({
+/**
+ * Bump access count and last accessed timestamp for a memory.
+ */
+export async function updateMemoryAccess(memoryId: string) {
+  return prisma.memory.update({
     where: { id: memoryId },
     data: {
       accessCount: { increment: 1 },
@@ -254,31 +225,51 @@ export async function updateMemoryAccess(memoryId: string): Promise<void> {
   });
 }
 
-export async function getMemoryStats(userId: string) {
-  const [total, byType] = await Promise.all([
-    prisma.memory.count({ where: { userId } }),
-    prisma.memory.groupBy({
-      by: ["type"],
-      where: { userId },
-      _count: true,
+/**
+ * List memories with pagination and optional type filter.
+ */
+export async function listMemories(
+  userId: string,
+  type?: string,
+  limit = 50,
+  offset = 0,
+) {
+  const where: { userId: string; type?: string } = { userId };
+  if (type) where.type = type;
+
+  const [memories, total] = await Promise.all([
+    prisma.memory.findMany({
+      where,
+      orderBy: { updatedAt: "desc" },
+      take: limit,
+      skip: offset,
     }),
+    prisma.memory.count({ where }),
   ]);
 
-  const stats: Record<string, number> = { total };
-  for (const group of byType) {
-    stats[group.type] = group._count;
-  }
-
-  return stats;
+  return { memories, total };
 }
 
-// Re-export legacy functions for backward compatibility with existing routes
-export {
-  searchMemories,
-  createMemory,
-  updateMemory,
-  deleteMemory,
-  getMemoryById,
-  getPeople,
-  getContextByName,
-} from "./memory.js";
+/**
+ * Delete a memory by id, verifying ownership.
+ */
+export async function deleteMemory(id: string, userId: string) {
+  return prisma.memory.delete({ where: { id, userId } });
+}
+
+/**
+ * Get memory stats for a user.
+ */
+export async function getMemoryStats(userId: string) {
+  const [totalPeople, totalProjects, totalCommitments, totalConcepts, totalCompanies, total] =
+    await Promise.all([
+      prisma.memory.count({ where: { userId, type: "person" } }),
+      prisma.memory.count({ where: { userId, type: "project" } }),
+      prisma.memory.count({ where: { userId, type: "commitment" } }),
+      prisma.memory.count({ where: { userId, type: "concept" } }),
+      prisma.memory.count({ where: { userId, type: "company" } }),
+      prisma.memory.count({ where: { userId } }),
+    ]);
+
+  return { total, totalPeople, totalProjects, totalCommitments, totalConcepts, totalCompanies };
+}

@@ -5,26 +5,16 @@ import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
 import { createMockTranscriptSegment } from "../services/transcription.js";
 import { generateWhisperCards } from "../services/whisper.js";
-import {
-  startTranscription,
-  processAudioChunk,
-  stopTranscription,
-  getTranscriptSegments,
-  getAccumulatedTranscript,
-} from "../services/deepgram.service.js";
-import {
-  startInferenceLoop,
-  stopInferenceLoop,
-  switchMode,
-} from "../services/inference.service.js";
-import { processPostSession } from "../services/post-session.service.js";
+import { createDeepgramSession, type DeepgramSessionHandle, type TranscriptDelta } from "../services/deepgram.service.js";
+import { initSessionInference, clearSessionInference, addTranscriptAndMaybeInfer, switchSessionMode, getSessionTranscript } from "../services/inference.service.js";
+import { processSessionEnd } from "../services/post-session.service.js";
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
   activeSessionId?: string;
-  transcriptBuffer?: Array<{ speaker: string; text: string; timestamp: number }>;
-  isLiveSession?: boolean;
   activeModeId?: string;
+  transcriptBuffer?: Array<{ speaker: string; text: string; timestamp: number }>;
+  deepgramSession?: DeepgramSessionHandle;
 }
 
 export function setupWebSocket(httpServer: HttpServer): Server {
@@ -55,7 +45,7 @@ export function setupWebSocket(httpServer: HttpServer): Server {
   io.on("connection", (socket: AuthenticatedSocket) => {
     console.log(`Client connected: ${socket.userId}`);
 
-    // Legacy event: session:start (keep for backward compat)
+    // --- Legacy: session:start (backward compatible) ---
     socket.on("session:start", async (data: { sessionId: string }) => {
       try {
         const session = await prisma.session.findFirst({
@@ -82,95 +72,83 @@ export function setupWebSocket(httpServer: HttpServer): Server {
       }
     });
 
-    // New event: session:start-live (with mode, Deepgram, and inference)
-    socket.on("session:start-live", async (data: { modeId?: string; sessionId?: string }) => {
+    // --- New: session:start-live (with mode and Deepgram) ---
+    socket.on("session:start-live", async (data: { sessionId?: string; modeId?: string }) => {
       try {
-        const modeId = data.modeId || "meeting";
+        const modeId = data.modeId ?? "meeting";
 
+        // Create or use existing session
         let sessionId = data.sessionId;
         if (!sessionId) {
           const session = await prisma.session.create({
             data: {
               userId: socket.userId!,
+              mode: "live",
               modeId,
-              mode: "conversation",
               isLive: true,
-              status: "active",
+              title: `Live session - ${new Date().toLocaleDateString()}`,
             },
           });
           sessionId = session.id;
         } else {
           await prisma.session.update({
             where: { id: sessionId },
-            data: { isLive: true, modeId, status: "active" },
+            data: { isLive: true, modeId },
           });
         }
 
         socket.activeSessionId = sessionId;
-        socket.isLiveSession = true;
         socket.activeModeId = modeId;
         socket.transcriptBuffer = [];
         socket.join(`session:${sessionId}`);
 
-        // Start Deepgram transcription
-        await startTranscription(
-          sessionId,
-          // onDelta callback
-          (delta) => {
-            socket.emit("transcript:delta", {
-              sessionId,
-              ...delta,
-            });
+        // Initialize inference pipeline
+        initSessionInference(sessionId, modeId);
 
-            if (delta.isFinal && delta.text.trim()) {
+        // Start Deepgram session
+        socket.deepgramSession = createDeepgramSession(
+          (delta: TranscriptDelta) => {
+            // Emit transcript events
+            if (delta.isFinal) {
               socket.emit("transcript:final", {
-                sessionId,
                 text: delta.text,
-                speaker: delta.speaker !== undefined ? `Speaker ${delta.speaker}` : "Speaker 1",
+                speaker: delta.speaker,
                 timestamp: delta.timestamp,
                 confidence: delta.confidence,
               });
+            } else {
+              socket.emit("transcript:delta", {
+                text: delta.text,
+                isFinal: false,
+                speaker: delta.speaker,
+                timestamp: delta.timestamp,
+                confidence: delta.confidence,
+              });
+            }
 
-              // Add to local buffer
-              if (socket.transcriptBuffer) {
-                socket.transcriptBuffer.push({
-                  speaker: delta.speaker !== undefined ? `Speaker ${delta.speaker}` : "Speaker 1",
-                  text: delta.text,
-                  timestamp: delta.timestamp,
-                });
-              }
+            // Feed to inference pipeline (only final segments)
+            if (delta.isFinal && sessionId) {
+              socket.transcriptBuffer?.push({
+                speaker: delta.speaker !== undefined ? `Speaker ${delta.speaker}` : "Speaker",
+                text: delta.text,
+                timestamp: delta.timestamp,
+              });
+
+              addTranscriptAndMaybeInfer(
+                sessionId,
+                socket.userId!,
+                delta.text,
+                delta.speaker,
+                io,
+              ).catch((err) => console.error("Inference error:", err));
             }
           },
-          // onError callback
-          (error) => {
-            console.error(`[WS] Deepgram error for session ${sessionId}:`, error);
-            socket.emit("error", { message: "Transcription error, using fallback" });
-          }
+          (error: Error) => {
+            socket.emit("error", { message: `Transcription error: ${error.message}` });
+          },
         );
 
-        // Start inference loop
-        startInferenceLoop(
-          sessionId,
-          socket.userId!,
-          modeId,
-          (event) => {
-            const eventType = event.type as string;
-            if (eventType === "whisper:card") {
-              socket.emit("whisper:card", {
-                sessionId,
-                card: event.card,
-              });
-            } else if (eventType === "inference:thinking") {
-              socket.emit("inference:thinking", {});
-            }
-          }
-        );
-
-        socket.emit("session:live-status", {
-          isLive: true,
-          modeId,
-          sessionId,
-        });
+        socket.emit("session:live-status", { isLive: true, modeId, sessionId });
       } catch (err) {
         socket.emit("error", {
           message: err instanceof Error ? err.message : "Failed to start live session",
@@ -178,18 +156,28 @@ export function setupWebSocket(httpServer: HttpServer): Server {
       }
     });
 
-    // Audio chunk handling (works for both legacy and live sessions)
-    socket.on("audio:chunk", async (data: { chunk: string } | Buffer) => {
+    // --- audio:chunk (enhanced to forward to Deepgram) ---
+    socket.on("audio:chunk", async (data: Buffer | { chunk: string }) => {
       if (!socket.activeSessionId || !socket.transcriptBuffer) {
         socket.emit("error", { message: "No active session" });
         return;
       }
 
       try {
-        if (socket.isLiveSession) {
-          // Live session: forward to Deepgram
-          const chunk = Buffer.isBuffer(data) ? data : Buffer.from((data as { chunk: string }).chunk, "base64");
-          const mockDelta = processAudioChunk(socket.activeSessionId, chunk);
+        // If we have a Deepgram session, forward audio
+        if (socket.deepgramSession?.isOpen()) {
+          const audioBuffer = Buffer.isBuffer(data)
+            ? data
+            : Buffer.from((data as { chunk: string }).chunk, "base64");
+          socket.deepgramSession.send(audioBuffer);
+          return;
+        }
+
+        // Fallback: mock transcription (legacy behavior)
+        const segment = createMockTranscriptSegment(
+          `Transcribed segment at ${new Date().toISOString()}`,
+          "Speaker 1",
+        );
 
           // If mock mode returned a delta, emit it
           if (mockDelta) {
@@ -207,18 +195,15 @@ export function setupWebSocket(httpServer: HttpServer): Server {
                 confidence: mockDelta.confidence,
               });
 
-              socket.transcriptBuffer.push({
-                speaker: "Speaker 1",
-                text: mockDelta.text,
-                timestamp: mockDelta.timestamp,
-              });
-            }
-          }
-        } else {
-          // Legacy mock transcription
-          const segment = createMockTranscriptSegment(
-            `Transcribed segment at ${new Date().toISOString()}`,
-            "Speaker 1"
+        if (socket.transcriptBuffer.length % 10 === 0) {
+          const transcriptText = socket.transcriptBuffer
+            .map((s) => `${s.speaker}: ${s.text}`)
+            .join("\n");
+
+          const cards = await generateWhisperCards(
+            socket.activeSessionId,
+            transcriptText,
+            socket.userId!,
           );
 
           socket.transcriptBuffer.push(segment);
@@ -253,79 +238,40 @@ export function setupWebSocket(httpServer: HttpServer): Server {
       }
     });
 
-    // Stop live session
+    // --- session:stop-live (new: triggers post-processing) ---
     socket.on("session:stop-live", async () => {
       if (!socket.activeSessionId) {
         socket.emit("error", { message: "No active session" });
         return;
       }
 
+      const sessionId = socket.activeSessionId;
+      const modeId = socket.activeModeId ?? "meeting";
+
       try {
-        const sessionId = socket.activeSessionId;
+        // Close Deepgram connection
+        socket.deepgramSession?.close();
+        socket.deepgramSession = undefined;
 
-        // Stop Deepgram
-        stopTranscription(sessionId);
+        socket.emit("session:live-status", { isLive: false, modeId, sessionId });
 
-        // Stop inference
-        stopInferenceLoop(sessionId);
-
-        socket.emit("session:live-status", {
-          isLive: false,
-          modeId: socket.activeModeId || "meeting",
-          sessionId,
-        });
+        // Run post-session processing
+        const result = await processSessionEnd(sessionId, socket.userId!, modeId);
 
         socket.emit("session:status", {
           sessionId,
-          status: "processing",
+          status: "completed",
+          summary: result.summary,
+          memoriesExtracted: result.memoriesExtracted,
+          savesDetected: result.savesDetected,
         });
 
-        // Save transcript
-        const segments = getTranscriptSegments(sessionId);
-        const transcript = segments.length > 0
-          ? segments
-          : socket.transcriptBuffer || [];
-
-        await prisma.session.update({
-          where: { id: sessionId },
-          data: {
-            transcript,
-            status: "processing",
-            isLive: false,
-          },
-        });
-
-        // Run post-session processing
-        try {
-          const result = await processPostSession(sessionId, socket.userId!);
-          socket.emit("session:status", {
-            sessionId,
-            status: "completed",
-          });
-          socket.emit("debrief:ready", {
-            sessionId,
-            summary: result.summary,
-            memoriesExtracted: result.memoriesExtracted,
-            angelSaves: result.angelSaves,
-          });
-        } catch (err) {
-          console.error(`[WS] Post-session processing failed for ${sessionId}:`, err);
-          // Still mark as completed
-          await prisma.session.update({
-            where: { id: sessionId },
-            data: { status: "completed", isLive: false },
-          });
-          socket.emit("session:status", {
-            sessionId,
-            status: "completed",
-          });
-        }
+        socket.emit("debrief:ready", { sessionId });
 
         socket.leave(`session:${sessionId}`);
         socket.activeSessionId = undefined;
-        socket.transcriptBuffer = undefined;
-        socket.isLiveSession = false;
         socket.activeModeId = undefined;
+        socket.transcriptBuffer = undefined;
       } catch (err) {
         socket.emit("error", {
           message: err instanceof Error ? err.message : "Failed to stop live session",
@@ -333,7 +279,7 @@ export function setupWebSocket(httpServer: HttpServer): Server {
       }
     });
 
-    // Legacy session:end (keep for backward compat)
+    // --- Legacy: session:end (backward compatible) ---
     socket.on("session:end", async () => {
       if (!socket.activeSessionId || !socket.transcriptBuffer) {
         socket.emit("error", { message: "No active session" });
@@ -341,6 +287,9 @@ export function setupWebSocket(httpServer: HttpServer): Server {
       }
 
       try {
+        socket.deepgramSession?.close();
+        socket.deepgramSession = undefined;
+
         socket.emit("session:status", {
           sessionId: socket.activeSessionId,
           status: "processing",
@@ -364,6 +313,7 @@ export function setupWebSocket(httpServer: HttpServer): Server {
 
         socket.leave(`session:${socket.activeSessionId}`);
         socket.activeSessionId = undefined;
+        socket.activeModeId = undefined;
         socket.transcriptBuffer = undefined;
       } catch (err) {
         socket.emit("error", {
@@ -373,23 +323,26 @@ export function setupWebSocket(httpServer: HttpServer): Server {
       }
     });
 
-    // Whisper card feedback
+    // --- whisper:feedback ---
     socket.on("whisper:feedback", async (data: { cardId: string; helpful: boolean }) => {
       try {
         await prisma.whisperCard.update({
           where: { id: data.cardId },
           data: {
-            helpful: data.helpful,
             status: data.helpful ? "helpful" : "not_helpful",
-            acknowledgedAt: new Date(),
           },
         });
+
+        if (data.helpful && socket.activeSessionId) {
+          const { recordSave } = await import("../services/engagement.service.js");
+          await recordSave(socket.userId!, socket.activeSessionId, "Whisper card marked helpful");
+        }
       } catch (err) {
-        console.error("[WS] Failed to update whisper feedback:", err);
+        console.error("Error recording whisper feedback:", err);
       }
     });
 
-    // Whisper card acknowledge
+    // --- whisper:acknowledge ---
     socket.on("whisper:acknowledge", async (data: { cardId: string }) => {
       try {
         await prisma.whisperCard.update({
@@ -400,11 +353,11 @@ export function setupWebSocket(httpServer: HttpServer): Server {
           },
         });
       } catch (err) {
-        console.error("[WS] Failed to acknowledge whisper:", err);
+        console.error("Error acknowledging whisper:", err);
       }
     });
 
-    // Mode switch mid-session
+    // --- mode:switch ---
     socket.on("mode:switch", async (data: { modeId: string }) => {
       if (!socket.activeSessionId) {
         socket.emit("error", { message: "No active session" });
@@ -419,7 +372,7 @@ export function setupWebSocket(httpServer: HttpServer): Server {
           data: { modeId: data.modeId },
         });
 
-        switchMode(socket.activeSessionId, data.modeId);
+        switchSessionMode(socket.activeSessionId, data.modeId);
 
         socket.emit("session:live-status", {
           isLive: true,
@@ -434,6 +387,11 @@ export function setupWebSocket(httpServer: HttpServer): Server {
     });
 
     socket.on("disconnect", () => {
+      // Clean up Deepgram connection
+      socket.deepgramSession?.close();
+      if (socket.activeSessionId) {
+        clearSessionInference(socket.activeSessionId);
+      }
       console.log(`Client disconnected: ${socket.userId}`);
 
       // Clean up active sessions

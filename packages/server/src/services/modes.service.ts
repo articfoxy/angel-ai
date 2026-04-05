@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
 export interface ModeConfig {
@@ -10,10 +9,10 @@ export interface ModeConfig {
   maxWhispersPerMinute: number;
 }
 
-export const BUILT_IN_MODES: Record<string, ModeConfig> = {
+const BUILT_IN_MODES: Record<string, ModeConfig> = {
   meeting: {
     name: "Meeting Angel",
-    icon: "\u{1F3AF}",
+    icon: "\uD83C\uDFAF",
     systemPrompt: `You are Angel AI in Meeting mode. Focus on:
 - Identifying people mentioned and pulling context from memory
 - Suggesting smart questions at topic shifts or decision points
@@ -26,7 +25,7 @@ Keep suggestions meeting-appropriate: professional, concise, timely.`,
   },
   translator: {
     name: "Translator Angel",
-    icon: "\u{1F30D}",
+    icon: "\uD83C\uDF0D",
     systemPrompt: `You are Angel AI in Translator mode. Your primary job is real-time translation.
 - Detect the source language automatically
 - Translate to the user's target language
@@ -39,7 +38,7 @@ Keep suggestions meeting-appropriate: professional, concise, timely.`,
   },
   think: {
     name: "Think Angel",
-    icon: "\u{1F9E0}",
+    icon: "\uD83E\uDDE0",
     systemPrompt: `You are Angel AI in Think mode for solo brainstorming.
 - Connect current ideas to past thoughts from memory
 - Suggest structure for rambling thoughts
@@ -52,7 +51,7 @@ Keep suggestions meeting-appropriate: professional, concise, timely.`,
   },
   sales: {
     name: "Sales Angel",
-    icon: "\u{1F4BC}",
+    icon: "\uD83D\uDCBC",
     systemPrompt: `You are Angel AI in Sales mode.
 - Detect objections and suggest responses
 - Pull competitor intel from memory
@@ -65,7 +64,7 @@ Keep suggestions meeting-appropriate: professional, concise, timely.`,
   },
   learning: {
     name: "Learning Angel",
-    icon: "\u{1F4DA}",
+    icon: "\uD83D\uDCDA",
     systemPrompt: `You are Angel AI in Learning mode.
 - Highlight key concepts and definitions
 - Note when something contradicts or extends prior knowledge
@@ -78,7 +77,7 @@ Keep suggestions meeting-appropriate: professional, concise, timely.`,
   },
   coach: {
     name: "Coach Angel",
-    icon: "\u{1F5E3}\uFE0F",
+    icon: "\uD83D\uDDE3\uFE0F",
     systemPrompt: `You are Angel AI in Coach mode for communication improvement.
 - Monitor speaking pace (flag if too fast/slow)
 - Detect filler words (um, uh, like, you know)
@@ -91,7 +90,7 @@ Keep suggestions meeting-appropriate: professional, concise, timely.`,
   },
   builder: {
     name: "Builder Angel",
-    icon: "\u{1F527}",
+    icon: "\uD83D\uDD27",
     systemPrompt: `You are Angel AI in Builder mode for technical discussions.
 - Fact-check technical claims against known information
 - Note architectural decisions and their rationale
@@ -104,68 +103,100 @@ Keep suggestions meeting-appropriate: professional, concise, timely.`,
   },
 };
 
-export function getModeConfig(modeId: string, userSettings?: Record<string, unknown> | null): ModeConfig & { modeId: string } {
+export function getAllModeIds(): string[] {
+  return Object.keys(BUILT_IN_MODES);
+}
+
+export function getBuiltInModeConfig(modeId: string): ModeConfig | null {
+  return BUILT_IN_MODES[modeId] ?? null;
+}
+
+/**
+ * Get mode config with user overrides merged in.
+ */
+export async function getModeConfig(userId: string, modeId: string): Promise<ModeConfig & { modeId: string } | null> {
   const base = BUILT_IN_MODES[modeId];
-  if (!base) {
-    // Fall back to meeting mode
-    return { ...BUILT_IN_MODES.meeting, modeId: "meeting" };
-  }
-  if (userSettings) {
+  if (!base) return null;
+
+  const userMode = await prisma.angelMode.findUnique({
+    where: { userId_modeId: { userId, modeId } },
+  });
+
+  const settings = (userMode?.settings ?? {}) as Record<string, unknown>;
+
+  return {
+    ...base,
+    modeId,
+    ...(settings.maxWhispersPerMinute !== undefined
+      ? { maxWhispersPerMinute: settings.maxWhispersPerMinute as number }
+      : {}),
+  };
+}
+
+/**
+ * Get all modes with user overrides.
+ */
+export async function getAllModes(userId: string) {
+  const userModes = await prisma.angelMode.findMany({ where: { userId } });
+  const userModeMap = new Map(userModes.map((m) => [m.modeId, m]));
+
+  return Object.entries(BUILT_IN_MODES).map(([modeId, config]) => {
+    const userMode = userModeMap.get(modeId);
+    const settings = (userMode?.settings ?? {}) as Record<string, unknown>;
+
     return {
-      ...base,
-      ...userSettings,
-      // Preserve system prompt and whisper types unless explicitly overridden
-      systemPrompt: (userSettings.systemPrompt as string) || base.systemPrompt,
-      whisperTypes: (userSettings.whisperTypes as string[]) || base.whisperTypes,
       modeId,
+      ...config,
+      isDefault: userMode?.isDefault ?? (modeId === "meeting"),
+      userSettings: settings,
     };
-  }
-  return { ...base, modeId };
+  });
 }
 
 export async function getUserDefaultMode(userId: string): Promise<string> {
-  const prefs = await prisma.userPreferences.findUnique({
-    where: { userId },
+  const defaultMode = await prisma.angelMode.findFirst({
+    where: { userId, isDefault: true },
   });
-  return prefs?.defaultMode || "meeting";
+  if (defaultMode) return defaultMode.modeId;
+
+  const prefs = await prisma.userPreferences.findUnique({ where: { userId } });
+  return prefs?.defaultMode ?? "meeting";
 }
 
 export async function setUserDefaultMode(userId: string, modeId: string): Promise<void> {
-  if (!BUILT_IN_MODES[modeId]) {
-    throw new Error(`Invalid mode: ${modeId}`);
-  }
-  await prisma.userPreferences.upsert({
-    where: { userId },
-    create: { userId, defaultMode: modeId },
-    update: { defaultMode: modeId },
+  if (!BUILT_IN_MODES[modeId]) throw new Error(`Unknown mode: ${modeId}`);
+
+  // Clear any existing defaults
+  await prisma.angelMode.updateMany({
+    where: { userId, isDefault: true },
+    data: { isDefault: false },
+  });
+
+  // Upsert the chosen mode as default
+  await prisma.angelMode.upsert({
+    where: { userId_modeId: { userId, modeId } },
+    create: { userId, modeId, isDefault: true },
+    update: { isDefault: true },
   });
 }
 
-export async function getUserModeSettings(userId: string, modeId: string): Promise<Record<string, unknown> | null> {
-  const mode = await prisma.angelMode.findUnique({
+export async function getUserModeSettings(userId: string, modeId: string) {
+  const userMode = await prisma.angelMode.findUnique({
     where: { userId_modeId: { userId, modeId } },
   });
-  return (mode?.settings as Record<string, unknown>) || null;
+  return (userMode?.settings ?? {}) as Record<string, unknown>;
 }
 
 export async function updateUserModeSettings(
   userId: string,
   modeId: string,
-  settings: Record<string, unknown>
+  settings: Record<string, unknown>,
 ): Promise<void> {
-  if (!BUILT_IN_MODES[modeId]) {
-    throw new Error(`Invalid mode: ${modeId}`);
-  }
+  if (!BUILT_IN_MODES[modeId]) throw new Error(`Unknown mode: ${modeId}`);
+
   await prisma.angelMode.upsert({
     where: { userId_modeId: { userId, modeId } },
-    create: { userId, modeId, settings: settings as Prisma.InputJsonValue },
-    update: { settings: settings as Prisma.InputJsonValue },
+    create: { userId, modeId, settings: settings as Record<string, string | number | boolean | null> },
+    update: { settings: settings as Record<string, string | number | boolean | null> },
   });
-}
-
-export function listAllModes(): Array<{ modeId: string } & ModeConfig> {
-  return Object.entries(BUILT_IN_MODES).map(([modeId, config]) => ({
-    modeId,
-    ...config,
-  }));
 }

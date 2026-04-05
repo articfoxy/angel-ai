@@ -1,16 +1,21 @@
 import { prisma } from "../lib/prisma.js";
 
+/**
+ * Legacy memory service — preserved for backward compatibility with existing routes.
+ * New code should use memory.service.ts instead.
+ */
+
 export async function searchMemories(
   userId: string,
   query?: string,
-  type?: string
+  type?: string,
 ) {
-  const where: any = { userId };
+  const where: Record<string, unknown> = { userId };
   if (type) where.type = type;
   if (query) {
     where.OR = [
-      { name: { contains: query, mode: "insensitive" } },
-      { tags: { has: query } },
+      { title: { contains: query, mode: "insensitive" } },
+      { content: { contains: query, mode: "insensitive" } },
     ];
   }
 
@@ -25,21 +30,19 @@ export async function createMemory(
   data: {
     type: string;
     name: string;
-    content: any;
+    content: unknown;
     tags?: string[];
     sourceSessionId?: string;
-  }
+  },
 ) {
   return prisma.memory.create({
     data: {
       userId,
       type: data.type,
       title: data.name,
-      name: data.name,
-      content: JSON.stringify(data.content),
-      tags: data.tags || [],
-      sourceSessionId: data.sourceSessionId,
-      lastMentioned: new Date(),
+      content: typeof data.content === "string" ? data.content : JSON.stringify(data.content),
+      metadata: data.tags ? { tags: data.tags } : undefined,
+      sessionId: data.sourceSessionId,
     },
   });
 }
@@ -49,14 +52,22 @@ export async function updateMemory(
   userId: string,
   data: Partial<{
     name: string;
-    content: any;
+    content: unknown;
     tags: string[];
     type: string;
-  }>
+  }>,
 ) {
+  const updateData: Record<string, unknown> = {};
+  if (data.name !== undefined) updateData.title = data.name;
+  if (data.content !== undefined) {
+    updateData.content = typeof data.content === "string" ? data.content : JSON.stringify(data.content);
+  }
+  if (data.type !== undefined) updateData.type = data.type;
+  if (data.tags !== undefined) updateData.metadata = { tags: data.tags };
+
   return prisma.memory.update({
     where: { id, userId },
-    data: { ...data, updatedAt: new Date() },
+    data: updateData,
   });
 }
 
@@ -71,7 +82,7 @@ export async function getMemoryById(id: string, userId: string) {
 export async function getPeople(userId: string) {
   return prisma.memory.findMany({
     where: { userId, type: "person" },
-    orderBy: { lastMentioned: "desc" },
+    orderBy: { lastAccessed: "desc" },
   });
 }
 
@@ -79,7 +90,7 @@ export async function getContextByName(userId: string, name: string) {
   return prisma.memory.findMany({
     where: {
       userId,
-      name: { contains: name, mode: "insensitive" },
+      title: { contains: name, mode: "insensitive" },
     },
     orderBy: { updatedAt: "desc" },
   });

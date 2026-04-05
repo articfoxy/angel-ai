@@ -14,17 +14,26 @@ const updateSchema = z.object({
   timezone: z.string().optional(),
 });
 
-// GET /api/preferences - get user preferences
+// GET /api/preferences — get user preferences
 router.get("/", async (req: AuthRequest, res: Response, next) => {
   try {
-    let prefs = await prisma.userPreferences.findUnique({
+    const prefs = await prisma.userPreferences.findUnique({
       where: { userId: req.userId! },
     });
 
     if (!prefs) {
-      prefs = await prisma.userPreferences.create({
-        data: { userId: req.userId! },
+      // Return defaults
+      res.json({
+        success: true,
+        data: {
+          whisperFrequency: "active",
+          digestTime: "20:00",
+          digestEnabled: true,
+          defaultMode: "meeting",
+          timezone: "UTC",
+        },
       });
+      return;
     }
 
     res.json({ success: true, data: prefs });
@@ -33,14 +42,17 @@ router.get("/", async (req: AuthRequest, res: Response, next) => {
   }
 });
 
-// PUT /api/preferences - update user preferences
+// PUT /api/preferences — update user preferences
 router.put("/", async (req: AuthRequest, res: Response, next) => {
   try {
     const body = updateSchema.parse(req.body);
 
     const prefs = await prisma.userPreferences.upsert({
       where: { userId: req.userId! },
-      create: { userId: req.userId!, ...body },
+      create: {
+        userId: req.userId!,
+        ...body,
+      },
       update: body,
     });
 

@@ -1,3 +1,4 @@
+import { createClient, LiveTranscriptionEvents, LiveClient } from "@deepgram/sdk";
 import { config } from "../config/index.js";
 
 export interface TranscriptDelta {
@@ -8,49 +9,37 @@ export interface TranscriptDelta {
   confidence: number;
 }
 
-interface DeepgramConnection {
-  send: (data: Buffer) => void;
-  close: () => void;
+export interface DeepgramSessionHandle {
+  send(audio: Buffer): void;
+  close(): void;
+  isOpen(): boolean;
 }
 
-interface SessionTranscription {
-  connection: DeepgramConnection | null;
-  accumulatedTranscript: string;
-  segments: Array<{ speaker: string; text: string; timestamp: number }>;
-  lastActivity: number;
-}
+type TranscriptCallback = (delta: TranscriptDelta) => void;
+type ErrorCallback = (error: Error) => void;
 
-const activeSessions = new Map<string, SessionTranscription>();
+/**
+ * Creates a Deepgram live transcription connection for a session.
+ * Falls back gracefully when DEEPGRAM_API_KEY is not set.
+ */
+export function createDeepgramSession(
+  onTranscript: TranscriptCallback,
+  onError: ErrorCallback,
+): DeepgramSessionHandle {
+  const apiKey = config.ai.deepgramApiKey;
 
-function hasDeepgramKey(): boolean {
-  return Boolean(config.ai.deepgramApiKey);
-}
-
-export async function startTranscription(
-  sessionId: string,
-  onDelta: (delta: TranscriptDelta) => void,
-  onError: (error: Error) => void
-): Promise<void> {
-  const session: SessionTranscription = {
-    connection: null,
-    accumulatedTranscript: "",
-    segments: [],
-    lastActivity: Date.now(),
-  };
-
-  activeSessions.set(sessionId, session);
-
-  if (!hasDeepgramKey()) {
-    console.log(`[Deepgram] No API key set, using mock transcription for session ${sessionId}`);
-    // Mock mode: connection stays null, processAudioChunk will generate mock transcripts
-    return;
+  if (!apiKey) {
+    console.warn("DEEPGRAM_API_KEY not set — using mock transcription");
+    return createMockSession(onTranscript);
   }
 
-  try {
-    const { createClient } = await import("@deepgram/sdk");
-    const deepgram = createClient(config.ai.deepgramApiKey);
+  const deepgram = createClient(apiKey);
 
-    const connection = deepgram.listen.live({
+  let connection: LiveClient | null = null;
+  let open = false;
+
+  try {
+    connection = deepgram.listen.live({
       model: "nova-3",
       language: "en",
       smart_format: true,
@@ -62,157 +51,103 @@ export async function startTranscription(
       channels: 1,
     });
 
-    connection.on("open", () => {
-      console.log(`[Deepgram] Connection opened for session ${sessionId}`);
+    connection.on(LiveTranscriptionEvents.Open, () => {
+      open = true;
     });
 
-    connection.on("Results", (data: Record<string, unknown>) => {
-      try {
-        const result = data as {
-          channel?: {
-            alternatives?: Array<{
-              transcript?: string;
-              confidence?: number;
-              words?: Array<{ speaker?: number }>;
-            }>;
-          };
-          is_final?: boolean;
-          speech_final?: boolean;
-        };
+    connection.on(LiveTranscriptionEvents.Transcript, (data: Record<string, unknown>) => {
+      const channel = data.channel as { alternatives?: Array<{ transcript?: string; confidence?: number; words?: Array<{ speaker?: number }> }> } | undefined;
+      const alternative = channel?.alternatives?.[0];
+      if (!alternative?.transcript) return;
 
-        const alternative = result.channel?.alternatives?.[0];
-        if (!alternative?.transcript) return;
+      const delta: TranscriptDelta = {
+        text: alternative.transcript,
+        isFinal: (data.is_final as boolean) ?? false,
+        speaker: alternative.words?.[0]?.speaker,
+        timestamp: Date.now(),
+        confidence: alternative.confidence ?? 0,
+      };
 
-        const transcript = alternative.transcript;
-        const isFinal = Boolean(result.is_final);
-        const speaker = alternative.words?.[0]?.speaker;
-        const confidence = alternative.confidence ?? 0;
-
-        const delta: TranscriptDelta = {
-          text: transcript,
-          isFinal,
-          speaker,
-          timestamp: Date.now(),
-          confidence,
-        };
-
-        if (isFinal && transcript.trim()) {
-          session.accumulatedTranscript += (session.accumulatedTranscript ? " " : "") + transcript.trim();
-          session.segments.push({
-            speaker: speaker !== undefined ? `Speaker ${speaker}` : "Speaker 1",
-            text: transcript.trim(),
-            timestamp: Date.now(),
-          });
-        }
-
-        session.lastActivity = Date.now();
-        onDelta(delta);
-      } catch (err) {
-        console.error(`[Deepgram] Error processing result for session ${sessionId}:`, err);
-      }
+      onTranscript(delta);
     });
 
-    connection.on("error", (err: Error) => {
-      console.error(`[Deepgram] Error for session ${sessionId}:`, err);
+    connection.on(LiveTranscriptionEvents.Error, (err: Error) => {
+      console.error("Deepgram error:", err);
       onError(err);
     });
 
-    connection.on("close", () => {
-      console.log(`[Deepgram] Connection closed for session ${sessionId}`);
+    connection.on(LiveTranscriptionEvents.Close, () => {
+      open = false;
     });
-
-    session.connection = {
-      send: (data: Buffer) => {
-        try {
-          // Convert Buffer to ArrayBuffer for Deepgram SDK compatibility
-          const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-          connection.send(arrayBuffer as ArrayBuffer);
-        } catch (err) {
-          console.error(`[Deepgram] Error sending audio for session ${sessionId}:`, err);
-        }
-      },
-      close: () => {
-        try {
-          connection.finish();
-        } catch {
-          // Ignore close errors
-        }
-      },
-    };
   } catch (err) {
-    console.error(`[Deepgram] Failed to initialize for session ${sessionId}:`, err);
-    // Fall back to mock mode
-    session.connection = null;
-  }
-}
-
-let mockCounter = 0;
-
-export function processAudioChunk(sessionId: string, chunk: Buffer): TranscriptDelta | null {
-  const session = activeSessions.get(sessionId);
-  if (!session) return null;
-
-  session.lastActivity = Date.now();
-
-  if (session.connection) {
-    // Real Deepgram: forward audio, deltas come via callback
-    session.connection.send(chunk);
-    return null;
+    console.error("Failed to create Deepgram connection:", err);
+    return createMockSession(onTranscript);
   }
 
-  // Mock mode: generate a mock transcript every few chunks
-  mockCounter++;
-  if (mockCounter % 3 === 0) {
-    const mockText = `Transcribed segment ${mockCounter} at ${new Date().toISOString()}`;
-    const delta: TranscriptDelta = {
-      text: mockText,
-      isFinal: true,
-      speaker: 1,
-      timestamp: Date.now(),
-      confidence: 0.95,
-    };
-
-    session.accumulatedTranscript += (session.accumulatedTranscript ? " " : "") + mockText;
-    session.segments.push({
-      speaker: "Speaker 1",
-      text: mockText,
-      timestamp: Date.now(),
-    });
-
-    return delta;
-  }
-
-  return null;
+  return {
+    send(audio: Buffer) {
+      if (open && connection) {
+        // Convert Buffer to ArrayBuffer for Deepgram SDK
+        const arrayBuffer = audio.buffer.slice(
+          audio.byteOffset,
+          audio.byteOffset + audio.byteLength,
+        );
+        connection.send(arrayBuffer as ArrayBuffer);
+      }
+    },
+    close() {
+      if (connection) {
+        open = false;
+        connection.requestClose();
+        connection = null;
+      }
+    },
+    isOpen() {
+      return open;
+    },
+  };
 }
 
-export function getAccumulatedTranscript(sessionId: string): string {
-  return activeSessions.get(sessionId)?.accumulatedTranscript || "";
-}
+/**
+ * Mock transcription session for development without Deepgram key.
+ */
+function createMockSession(onTranscript: TranscriptCallback): DeepgramSessionHandle {
+  let open = true;
+  let chunkCount = 0;
 
-export function getTranscriptSegments(sessionId: string): Array<{ speaker: string; text: string; timestamp: number }> {
-  return activeSessions.get(sessionId)?.segments || [];
-}
+  const mockPhrases = [
+    "So I think the main thing we need to focus on is the timeline.",
+    "Right, and we should also consider the budget implications.",
+    "I'll send over the updated proposal by end of day Friday.",
+    "Let's schedule a follow-up meeting for next week.",
+    "The key metrics we're tracking show positive growth.",
+    "We agreed to move forward with option B.",
+    "Can someone take the action item to review the contract?",
+    "I think that's a great point about the user experience.",
+  ];
 
-export function getRecentTranscript(sessionId: string, windowMs: number = 180000): string {
-  const session = activeSessions.get(sessionId);
-  if (!session) return "";
+  return {
+    send(_audio: Buffer) {
+      if (!open) return;
+      chunkCount++;
 
-  const cutoff = Date.now() - windowMs;
-  const recentSegments = session.segments.filter((s) => s.timestamp >= cutoff);
-  return recentSegments.map((s) => `${s.speaker}: ${s.text}`).join("\n");
-}
-
-export function stopTranscription(sessionId: string): void {
-  const session = activeSessions.get(sessionId);
-  if (!session) return;
-
-  if (session.connection) {
-    session.connection.close();
-  }
-
-  activeSessions.delete(sessionId);
-}
-
-export function isSessionActive(sessionId: string): boolean {
-  return activeSessions.has(sessionId);
+      // Emit a mock transcript every ~10 chunks (simulating real speech)
+      if (chunkCount % 10 === 0) {
+        const phraseIndex = Math.floor(chunkCount / 10) % mockPhrases.length;
+        onTranscript({
+          text: mockPhrases[phraseIndex],
+          isFinal: true,
+          speaker: chunkCount % 20 === 0 ? 1 : 0,
+          timestamp: Date.now(),
+          confidence: 0.92 + Math.random() * 0.08,
+        });
+      }
+    },
+    close() {
+      open = false;
+    },
+    isOpen() {
+      return open;
+    },
+  };
 }

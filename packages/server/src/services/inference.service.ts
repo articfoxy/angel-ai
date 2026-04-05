@@ -1,226 +1,259 @@
-import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
-import { getModeConfig, BUILT_IN_MODES } from "./modes.service.js";
-import { searchMemoriesByVector } from "./memory.service.js";
-import { getRecentTranscript } from "./deepgram.service.js";
+import { config } from "../config/index.js";
+import { getRelevantMemories } from "./memory.service.js";
+import { getBuiltInModeConfig } from "./modes.service.js";
+import type { Server as SocketServer } from "socket.io";
 
-interface InferenceWhisperCard {
+interface WhisperCardData {
   type: string;
   content: string;
   detail?: string;
   confidence: number;
-  priority: string;
+  priority?: string;
   sourceMemoryId?: string;
 }
 
 interface SessionInferenceState {
+  transcriptWindow: Array<{ text: string; speaker?: number; timestamp: number }>;
+  lastInferenceAt: number;
+  cardsDeliveredRecently: number;
+  lastCardDeliveryAt: number;
+  deliveredCardContents: Set<string>;
   modeId: string;
-  lastInferenceTime: number;
-  deliveredCardIds: Set<string>;
-  cardTimestamps: number[];
-  intervalId?: ReturnType<typeof setInterval>;
 }
 
 const sessionStates = new Map<string, SessionInferenceState>();
 
-function hasOpenAIKey(): boolean {
-  return Boolean(config.ai.openaiApiKey);
+/**
+ * Initialize inference state for a new live session.
+ */
+export function initSessionInference(sessionId: string, modeId: string): void {
+  sessionStates.set(sessionId, {
+    transcriptWindow: [],
+    lastInferenceAt: 0,
+    cardsDeliveredRecently: 0,
+    lastCardDeliveryAt: 0,
+    deliveredCardContents: new Set(),
+    modeId,
+  });
 }
 
-async function callOpenAI(messages: Array<{ role: string; content: string }>): Promise<string> {
-  if (!hasOpenAIKey()) {
-    return JSON.stringify({ cards: [] });
-  }
-
-  try {
-    const { default: OpenAI } = await import("openai");
-    const client = new OpenAI({ apiKey: config.ai.openaiApiKey });
-
-    const response = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: messages as Array<{ role: "system" | "user" | "assistant"; content: string }>,
-      response_format: { type: "json_object" },
-      max_tokens: 1000,
-      temperature: 0.7,
-    });
-
-    return response.choices[0]?.message?.content || JSON.stringify({ cards: [] });
-  } catch (err) {
-    console.error("[Inference] OpenAI call failed:", err);
-    return JSON.stringify({ cards: [] });
-  }
+/**
+ * Clean up inference state when session ends.
+ */
+export function clearSessionInference(sessionId: string): void {
+  sessionStates.delete(sessionId);
 }
 
-async function generateMockCards(modeId: string): Promise<InferenceWhisperCard[]> {
-  const mode = BUILT_IN_MODES[modeId] || BUILT_IN_MODES.meeting;
-  const type = mode.whisperTypes[Math.floor(Math.random() * mode.whisperTypes.length)] || "context";
-
-  // Only occasionally generate mock cards
-  if (Math.random() > 0.3) return [];
-
-  return [
-    {
-      type,
-      content: `[Mock] ${mode.name} suggestion based on recent conversation`,
-      confidence: 0.88,
-      priority: "medium",
-    },
-  ];
+/**
+ * Switch the mode for a live session.
+ */
+export function switchSessionMode(sessionId: string, modeId: string): void {
+  const state = sessionStates.get(sessionId);
+  if (state) state.modeId = modeId;
 }
 
-export async function runInference(
+/**
+ * Get the full accumulated transcript for a session.
+ */
+export function getSessionTranscript(sessionId: string): string {
+  const state = sessionStates.get(sessionId);
+  if (!state) return "";
+  return state.transcriptWindow.map((s) => s.text).join(" ");
+}
+
+/**
+ * Add transcript text to the rolling window and trigger inference if due.
+ */
+export async function addTranscriptAndMaybeInfer(
   sessionId: string,
   userId: string,
-  emit: (card: Record<string, unknown>) => void
+  text: string,
+  speaker: number | undefined,
+  io: SocketServer,
 ): Promise<void> {
   const state = sessionStates.get(sessionId);
   if (!state) return;
 
-  const transcript = getRecentTranscript(sessionId);
-  if (!transcript || transcript.trim().length < 20) return;
-
   const now = Date.now();
-  const fiveMinutesAgo = now - 5 * 60 * 1000;
-  const recentCards = state.cardTimestamps.filter((t) => t > fiveMinutesAgo);
-  if (recentCards.length >= 2) return; // Max 2 cards per 5 minutes
+  state.transcriptWindow.push({ text, speaker, timestamp: now });
 
-  emit({ type: "inference:thinking" });
+  // Keep a rolling 3-minute window
+  const threeMinutesAgo = now - 3 * 60 * 1000;
+  state.transcriptWindow = state.transcriptWindow.filter(
+    (s) => s.timestamp > threeMinutesAgo,
+  );
 
-  let cards: InferenceWhisperCard[];
+  // Trigger inference every 30 seconds of new speech
+  const timeSinceLastInference = now - state.lastInferenceAt;
+  if (timeSinceLastInference < 30_000) return;
 
-  if (!hasOpenAIKey()) {
-    cards = await generateMockCards(state.modeId);
-  } else {
-    // Get relevant memories for context
-    let memoryContext = "";
-    try {
-      const memories = await searchMemoriesByVector(userId, transcript, 5);
-      memoryContext = memories
-        .map((m) => `[${m.type}] ${m.title}: ${m.content}`)
-        .join("\n");
-    } catch {
-      // No memories or vector search unavailable
-    }
+  state.lastInferenceAt = now;
 
-    const modeConfig = getModeConfig(state.modeId);
-
-    const messages = [
-      {
-        role: "system",
-        content: `${modeConfig.systemPrompt}
-
-You are generating WhisperCards - brief, high-value suggestions shown to the user during a live conversation. Rules:
-- Generate 0-2 cards maximum
-- Each card content must be under 140 characters
-- Each card detail (optional, expandable) must be under 500 characters
-- Only suggest if confidence >= 0.85
-- Card types available: ${modeConfig.whisperTypes.join(", ")}
-- Priority: low, medium, or high
-- Be concise, actionable, and timely
-
-Return JSON: { "cards": [{ "type": string, "content": string, "detail"?: string, "confidence": number, "priority": string }] }
-If nothing useful to suggest, return { "cards": [] }`,
-      },
-      {
-        role: "user",
-        content: `Recent transcript:\n${transcript}\n\n${memoryContext ? `Relevant memories:\n${memoryContext}` : "No relevant memories found."}`,
-      },
-    ];
-
-    const response = await callOpenAI(messages);
-    try {
-      const parsed = JSON.parse(response);
-      cards = Array.isArray(parsed.cards) ? parsed.cards : [];
-    } catch {
-      cards = [];
-    }
+  // Reset card count every 5 minutes
+  if (now - state.lastCardDeliveryAt > 5 * 60 * 1000) {
+    state.cardsDeliveredRecently = 0;
   }
 
-  const threshold = config.ai.whisperConfidenceThreshold;
+  // Max 2 cards per 5 minutes
+  if (state.cardsDeliveredRecently >= 2) return;
 
-  for (const card of cards) {
-    if (card.confidence < threshold) continue;
+  try {
+    io.to(`session:${sessionId}`).emit("inference:thinking", {});
 
-    // Check for duplicate content
-    const contentKey = card.content.toLowerCase().trim();
-    if (state.deliveredCardIds.has(contentKey)) continue;
+    const cards = await runInference(sessionId, userId, state);
 
-    try {
-      const created = await prisma.whisperCard.create({
+    for (const card of cards) {
+      // Skip duplicates
+      if (state.deliveredCardContents.has(card.content)) continue;
+
+      const whisper = await prisma.whisperCard.create({
         data: {
           sessionId,
           userId,
           type: card.type,
-          content: card.content.slice(0, 140),
-          detail: card.detail?.slice(0, 500),
+          content: card.content,
+          detail: card.detail,
           confidence: card.confidence,
-          priority: card.priority || "medium",
+          priority: card.priority ?? "medium",
           sourceMemoryId: card.sourceMemoryId,
-          status: "delivered",
         },
       });
 
-      state.deliveredCardIds.add(contentKey);
-      state.cardTimestamps.push(Date.now());
+      state.deliveredCardContents.add(card.content);
+      state.cardsDeliveredRecently++;
+      state.lastCardDeliveryAt = now;
 
-      emit({
-        type: "whisper:card",
-        card: {
-          id: created.id,
-          type: created.type,
-          content: created.content,
-          detail: created.detail,
-          confidence: created.confidence,
-          priority: created.priority,
-          requiresAck: created.requiresAck,
-          createdAt: created.createdAt,
-        },
-      });
-    } catch (err) {
-      console.error("[Inference] Failed to create whisper card:", err);
+      io.to(`session:${sessionId}`).emit("whisper:card", whisper);
+
+      if (state.cardsDeliveredRecently >= 2) break;
     }
+  } catch (err) {
+    console.error("Inference error:", err);
   }
-
-  state.lastInferenceTime = Date.now();
 }
 
-export function startInferenceLoop(
+/**
+ * Run GPT-4o-mini inference to generate whisper cards.
+ */
+async function runInference(
   sessionId: string,
   userId: string,
-  modeId: string,
-  emit: (card: Record<string, unknown>) => void,
-  intervalMs: number = 45000
-): void {
-  // Stop existing loop if any
-  stopInferenceLoop(sessionId);
+  state: SessionInferenceState,
+): Promise<WhisperCardData[]> {
+  const apiKey = config.ai.openaiApiKey;
 
-  const state: SessionInferenceState = {
-    modeId,
-    lastInferenceTime: 0,
-    deliveredCardIds: new Set(),
-    cardTimestamps: [],
-  };
+  const transcriptText = state.transcriptWindow
+    .map((s) => (s.speaker !== undefined ? `Speaker ${s.speaker}: ${s.text}` : s.text))
+    .join("\n");
 
-  state.intervalId = setInterval(() => {
-    runInference(sessionId, userId, emit).catch((err) => {
-      console.error(`[Inference] Error in loop for session ${sessionId}:`, err);
+  // Get relevant memories
+  const memories = await getRelevantMemories(userId, transcriptText, 5);
+  const memoryContext = memories
+    .map((m) => `[${m.type}] ${m.title}: ${m.content}`)
+    .join("\n");
+
+  // Get mode config
+  const modeConfig = getBuiltInModeConfig(state.modeId);
+
+  if (!apiKey) {
+    return generateMockCards(state, modeConfig?.whisperTypes ?? ["context"]);
+  }
+
+  const systemPrompt = modeConfig?.systemPrompt ?? "You are Angel AI, a real-time conversation assistant.";
+  const allowedTypes = modeConfig?.whisperTypes ?? ["context", "question"];
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `${systemPrompt}
+
+You are generating whisper cards — brief, real-time suggestions for the user during a live conversation.
+
+Rules:
+- Generate 0-2 cards maximum
+- Each card must have confidence >= 0.85
+- Content must be max 140 characters
+- Detail (optional) must be max 500 characters
+- Allowed types: ${allowedTypes.join(", ")}
+- Only suggest if genuinely helpful — no filler
+
+Return a JSON object with a "cards" array. Each card has: type, content, confidence (0-1), detail (optional), priority ("low"|"medium"|"high").
+
+User's memory context:
+${memoryContext || "No memories yet."}`,
+          },
+          {
+            role: "user",
+            content: `Recent conversation:\n${transcriptText}`,
+          },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.4,
+        max_tokens: 500,
+      }),
     });
-  }, intervalMs);
 
-  sessionStates.set(sessionId, state);
+    if (!response.ok) {
+      console.error("Inference API error:", response.statusText);
+      return [];
+    }
+
+    const data = (await response.json()) as {
+      choices: Array<{ message: { content: string } }>;
+    };
+    const parsed = JSON.parse(data.choices[0].message.content) as {
+      cards?: WhisperCardData[];
+    };
+
+    const cards = (parsed.cards ?? []).filter(
+      (c) => c.confidence >= 0.85 && c.content.length <= 140,
+    );
+
+    return cards.slice(0, 2);
+  } catch (err) {
+    console.error("Inference request failed:", err);
+    return [];
+  }
 }
 
-export function stopInferenceLoop(sessionId: string): void {
-  const state = sessionStates.get(sessionId);
-  if (state?.intervalId) {
-    clearInterval(state.intervalId);
-  }
-  sessionStates.delete(sessionId);
-}
+/**
+ * Generate mock whisper cards when no API key is available.
+ */
+function generateMockCards(
+  state: SessionInferenceState,
+  allowedTypes: string[],
+): WhisperCardData[] {
+  const transcriptText = state.transcriptWindow.map((s) => s.text).join(" ").toLowerCase();
 
-export function switchMode(sessionId: string, modeId: string): void {
-  const state = sessionStates.get(sessionId);
-  if (state) {
-    state.modeId = modeId;
+  const cards: WhisperCardData[] = [];
+
+  if (allowedTypes.includes("commitment") && /i'll|i will|let's|we agreed/.test(transcriptText)) {
+    cards.push({
+      type: "commitment",
+      content: "A commitment was detected in the conversation.",
+      confidence: 0.88,
+      priority: "high",
+    });
   }
+
+  if (allowedTypes.includes("context") && cards.length === 0) {
+    cards.push({
+      type: "context",
+      content: "Consider asking a follow-up question to dig deeper here.",
+      confidence: 0.86,
+      priority: "medium",
+    });
+  }
+
+  return cards.slice(0, 1);
 }

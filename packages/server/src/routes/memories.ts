@@ -1,99 +1,57 @@
 import { Router, Response } from "express";
-import { z } from "zod";
 import { authenticate, AuthRequest } from "../middleware/auth.js";
-import {
-  searchMemoriesByVector,
-  getMemoryStats,
-} from "../services/memory.service.js";
-import { prisma } from "../lib/prisma.js";
+import * as memoryService from "../services/memory.service.js";
 
 const router = Router();
 router.use(authenticate);
 
-const listSchema = z.object({
-  type: z.string().optional(),
-  limit: z.coerce.number().min(1).max(100).default(20),
-  offset: z.coerce.number().min(0).default(0),
-});
-
-// GET /api/memories - list user's memories (paginated, filterable by type)
+// GET /api/memories — list user's memories (paginated, filterable by type)
 router.get("/", async (req: AuthRequest, res: Response, next) => {
   try {
-    const params = listSchema.parse(req.query);
-    const where: { userId: string; type?: string } = { userId: req.userId! };
-    if (params.type) where.type = params.type;
+    const type = req.query.type as string | undefined;
+    const limit = parseInt((req.query.limit as string) || "50", 10);
+    const offset = parseInt((req.query.offset as string) || "0", 10);
 
-    const [memories, total] = await Promise.all([
-      prisma.memory.findMany({
-        where,
-        orderBy: { updatedAt: "desc" },
-        take: params.limit,
-        skip: params.offset,
-        select: {
-          id: true,
-          type: true,
-          title: true,
-          content: true,
-          metadata: true,
-          importance: true,
-          accessCount: true,
-          lastAccessed: true,
-          tags: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      }),
-      prisma.memory.count({ where }),
-    ]);
-
-    res.json({ success: true, data: { memories, total } });
+    const result = await memoryService.listMemories(req.userId!, type, limit, offset);
+    res.json({ success: true, data: result });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /api/memories/search?q= - semantic search
+// GET /api/memories/search?q= — semantic search
 router.get("/search", async (req: AuthRequest, res: Response, next) => {
   try {
-    const q = String(req.query.q || "");
-    if (!q) {
+    const rawQuery = req.query.q;
+    const query = Array.isArray(rawQuery) ? rawQuery[0] : rawQuery;
+    if (!query || typeof query !== "string") {
       res.status(400).json({ success: false, error: "Query parameter 'q' is required" });
       return;
     }
 
-    const limitParam = req.query.limit;
-    const limit = limitParam ? Math.min(parseInt(String(limitParam), 10), 20) : 5;
-    const results = await searchMemoriesByVector(req.userId!, q, limit);
-    res.json({ success: true, data: results });
+    const limit = parseInt((req.query.limit as string) || "5", 10);
+    const memories = await memoryService.searchMemories(req.userId!, query, limit);
+    res.json({ success: true, data: memories });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /api/memories/stats - memory statistics
+// GET /api/memories/stats — memory stats
 router.get("/stats", async (req: AuthRequest, res: Response, next) => {
   try {
-    const stats = await getMemoryStats(req.userId!);
+    const stats = await memoryService.getMemoryStats(req.userId!);
     res.json({ success: true, data: stats });
   } catch (err) {
     next(err);
   }
 });
 
-// DELETE /api/memories/:id - delete a memory
+// DELETE /api/memories/:id — delete a memory
 router.delete("/:id", async (req: AuthRequest, res: Response, next) => {
   try {
-    const id = String(req.params.id);
-    const memory = await prisma.memory.findFirst({
-      where: { id, userId: req.userId! },
-    });
-
-    if (!memory) {
-      res.status(404).json({ success: false, error: "Memory not found" });
-      return;
-    }
-
-    await prisma.memory.delete({ where: { id } });
+    const id = req.params.id as string;
+    await memoryService.deleteMemory(id, req.userId!);
     res.json({ success: true, data: null });
   } catch (err) {
     next(err);
