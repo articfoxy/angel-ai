@@ -8,7 +8,7 @@ export interface User {
 export interface Session {
   id: string;
   userId: string;
-  mode: 'conversation' | 'walk_and_think';
+  mode: string;
   status: 'active' | 'processing' | 'completed';
   title?: string;
   startedAt: string;
@@ -20,6 +20,8 @@ export interface Session {
   keyFacts: string[];
   promises: string[];
   actionItems: ActionItem[];
+  whisperCards?: WhisperCard[];
+  modeId?: string;
 }
 
 export interface TranscriptSegment {
@@ -27,6 +29,7 @@ export interface TranscriptSegment {
   speaker: string;
   text: string;
   timestamp: number;
+  isFinal?: boolean;
 }
 
 export interface Participant {
@@ -52,13 +55,26 @@ export interface Memory {
   metadata?: Record<string, unknown>;
 }
 
+export interface MemoryStats {
+  people: number;
+  projects: number;
+  commitments: number;
+  saves: number;
+  total: number;
+}
+
 export interface WhisperCard {
   id: string;
   sessionId: string;
-  type: 'suggestion' | 'reminder' | 'context' | 'insight';
+  type: 'context' | 'question' | 'commitment' | 'fact_check' | 'nudge' | 'action';
   content: string;
+  detail?: string;
+  priority?: 'low' | 'medium' | 'high';
+  ttl?: number;
   relatedMemoryId?: string;
   createdAt: string;
+  feedback?: 'positive' | 'negative';
+  acknowledged?: boolean;
 }
 
 export interface Action {
@@ -75,10 +91,13 @@ export interface Digest {
   id: string;
   userId: string;
   date: string;
+  streak?: number;
+  sessionsToday?: number;
   keyMoments: DigestItem[];
   followUps: DigestItem[];
   opportunities: DigestItem[];
   ideas: DigestItem[];
+  saves?: DigestItem[];
 }
 
 export interface DigestItem {
@@ -94,3 +113,34 @@ export interface AuthResponse {
 }
 
 export type SessionState = 'idle' | 'recording' | 'processing' | 'completed';
+
+export interface Mode {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  color: string;
+}
+
+export interface Streak {
+  current: number;
+  longest: number;
+  lastSessionDate: string;
+}
+
+export interface DashboardStats {
+  streak: Streak;
+  saves: number;
+  memoryStats: MemoryStats;
+  pendingCommitments: ActionItem[];
+  todaySessions: number;
+}
+
+export interface UserPreferences {
+  whisperFrequency: 'silent' | 'minimal' | 'active' | 'aggressive';
+  dailyDigest: boolean;
+  dailyDigestTime?: string;
+  defaultModeId?: string;
+  timezone: string;
+  autoDeleteDays: number;
+}

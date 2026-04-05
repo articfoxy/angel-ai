@@ -2,9 +2,15 @@ import type {
   AuthResponse,
   Session,
   Memory,
+  MemoryStats,
   Action,
   Digest,
   User,
+  Mode,
+  WhisperCard,
+  Streak,
+  DashboardStats,
+  UserPreferences,
 } from '../types';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -102,6 +108,18 @@ export const api = {
     return request<Memory>(`/api/memory/${id}`);
   },
 
+  deleteMemory(id: string) {
+    return request<void>(`/api/memory/${id}`, { method: 'DELETE' });
+  },
+
+  searchMemories(query: string) {
+    return request<Memory[]>(`/api/memory/search?q=${encodeURIComponent(query)}`);
+  },
+
+  getMemoryStats() {
+    return request<MemoryStats>('/api/memory/stats');
+  },
+
   // Actions
   getActions(sessionId?: string) {
     const qs = sessionId ? `?sessionId=${sessionId}` : '';
@@ -132,6 +150,55 @@ export const api = {
     return request<Digest>('/api/digest/generate', {
       method: 'POST',
       body: JSON.stringify({ date }),
+    });
+  },
+
+  // Modes
+  getModes() {
+    return request<Mode[]>('/api/modes');
+  },
+
+  getMode(modeId: string) {
+    return request<Mode>(`/api/modes/${modeId}`);
+  },
+
+  setDefaultMode(modeId: string) {
+    return request<void>('/api/modes/default', {
+      method: 'PUT',
+      body: JSON.stringify({ modeId }),
+    });
+  },
+
+  // Whisper Cards
+  getSessionWhispers(sessionId: string) {
+    return request<WhisperCard[]>(`/api/sessions/${sessionId}/whispers`);
+  },
+
+  submitWhisperFeedback(cardId: string, helpful: boolean) {
+    return request<void>(`/api/whispers/${cardId}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify({ helpful }),
+    });
+  },
+
+  // Engagement
+  getStreak() {
+    return request<Streak>('/api/engagement/streak');
+  },
+
+  getDashboardStats() {
+    return request<DashboardStats>('/api/dashboard/stats');
+  },
+
+  // Preferences
+  getPreferences() {
+    return request<UserPreferences>('/api/preferences');
+  },
+
+  updatePreferences(prefs: Partial<UserPreferences>) {
+    return request<UserPreferences>('/api/preferences', {
+      method: 'PATCH',
+      body: JSON.stringify(prefs),
     });
   },
 };

@@ -2,15 +2,15 @@ import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useSession } from '../hooks/useSession';
-import { RecordButton } from '../components/RecordButton';
-import { AudioRecorder } from '../components/AudioRecorder';
-import { TranscriptView } from '../components/TranscriptView';
-import { WhisperCard } from '../components/WhisperCard';
+import { useAudioCapture } from '../hooks/useAudioCapture';
+import { LiveTranscript } from '../components/LiveTranscript';
+import { WhisperStack } from '../components/WhisperStack';
+import { ModeSelector, ANGEL_MODES } from '../components/ModeSelector';
+import { ModePill } from '../components/ModePill';
+import { ThinkingIndicator } from '../components/ThinkingIndicator';
 import { api } from '../services/api';
-import { Pause, Square, MessageSquare, Footprints } from 'lucide-react';
-import type { SessionState } from '../types';
-
-type SessionMode = 'conversation' | 'walk_and_think';
+import { ArrowLeft, Square, Loader } from 'lucide-react';
+import type { Mode } from '../types';
 
 function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -27,44 +27,47 @@ export function Session() {
   const { token } = useAuth();
   const navigate = useNavigate();
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [mode, setMode] = useState<SessionMode>('conversation');
+  const [selectedMode, setSelectedMode] = useState<Mode>(ANGEL_MODES[0]);
 
   const {
     state,
     transcript,
     whisperCards,
     duration,
+    isThinking,
     connect,
     disconnect,
-    sendAudioChunk,
+    sendPcmFrame,
     dismissWhisper,
+    submitFeedback,
+    acknowledgeWhisper,
+    switchMode,
+    startLive,
   } = useSession({ sessionId, token });
 
-  const handleToggleRecord = useCallback(async () => {
-    if (state === 'idle') {
-      try {
-        const session = await api.startSession(mode);
-        setSessionId(session.id);
-        connect();
-      } catch {
-        // Demo mode: simulate recording locally
-        setSessionId('demo-session');
-        connect();
-      }
-    } else if (state === 'recording') {
-      disconnect();
-      if (sessionId) {
-        try {
-          await api.endSession(sessionId);
-        } catch {
-          // Demo mode: navigate directly
-        }
-        navigate(`/session/${sessionId}/debrief`);
-      }
-    }
-  }, [state, mode, sessionId, connect, disconnect, navigate]);
+  const { startCapture, stopCapture, isCapturing, error: audioError } = useAudioCapture({
+    onPcmFrame: (frame) => {
+      sendPcmFrame(frame);
+    },
+  });
 
-  const handleEndSession = async () => {
+  const handleStartSession = useCallback(async () => {
+    try {
+      const session = await api.startSession(selectedMode.id);
+      setSessionId(session.id);
+      connect();
+      startLive(selectedMode.id);
+      await startCapture();
+    } catch {
+      // Demo mode
+      setSessionId('demo-session');
+      connect();
+      await startCapture();
+    }
+  }, [selectedMode, connect, startLive, startCapture]);
+
+  const handleStopSession = useCallback(async () => {
+    stopCapture();
     disconnect();
     if (sessionId) {
       try {
@@ -74,112 +77,129 @@ export function Session() {
       }
       navigate(`/session/${sessionId}/debrief`);
     }
-  };
+  }, [sessionId, stopCapture, disconnect, navigate]);
+
+  const handleModeSwitch = useCallback(
+    (modeId: string) => {
+      const mode = ANGEL_MODES.find((m) => m.id === modeId);
+      if (mode) {
+        setSelectedMode(mode);
+        switchMode(modeId);
+      }
+    },
+    [switchMode]
+  );
 
   const isActive = state === 'recording' || state === 'processing';
 
+  // Mode selection screen
+  if (state === 'idle') {
+    return (
+      <div className="flex-1 flex flex-col pb-24">
+        <div className="px-5 pt-12 pb-4">
+          <div className="flex items-center gap-3 mb-6">
+            <button
+              onClick={() => navigate(-1)}
+              className="p-2 -ml-2 text-text-secondary hover:text-text rounded-lg"
+            >
+              <ArrowLeft size={20} />
+            </button>
+            <h1 className="text-xl font-bold text-text">New Session</h1>
+          </div>
+          <p className="text-sm text-text-secondary mb-6">Choose your Angel mode</p>
+          <ModeSelector
+            selectedModeId={selectedMode.id}
+            onSelect={(mode) => setSelectedMode(mode)}
+          />
+        </div>
+
+        {audioError && (
+          <div className="mx-5 mb-4 p-3 bg-danger/10 border border-danger/20 rounded-xl">
+            <p className="text-xs text-danger">{audioError}</p>
+          </div>
+        )}
+
+        <div className="flex-1" />
+
+        <div className="px-5 pb-6">
+          <button
+            onClick={handleStartSession}
+            className="w-full bg-primary hover:bg-primary-hover text-white font-semibold py-4 rounded-xl transition-colors flex items-center justify-center gap-2 text-base"
+          >
+            <span>{selectedMode.icon}</span>
+            Start {selectedMode.name}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Processing screen
+  if (state === 'processing') {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center pb-24">
+        <Loader size={32} className="text-primary animate-spin-slow mb-4" />
+        <p className="text-text-secondary text-sm">Processing your session...</p>
+        <p className="text-text-tertiary text-xs mt-1">This may take a moment</p>
+      </div>
+    );
+  }
+
+  // Live recording screen
   return (
     <div className="flex-1 flex flex-col pb-24">
       {/* Top bar */}
-      {isActive && (
-        <div className="bg-danger/10 border-b border-danger/20 px-4 py-3 flex items-center justify-between animate-fade-in">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-danger animate-pulse" />
-            <span className="text-xs text-danger font-medium">
-              Recording in progress
-            </span>
-          </div>
-          <button
-            onClick={handleEndSession}
-            className="flex items-center gap-1.5 text-xs text-danger font-medium px-3 py-1.5 rounded-lg hover:bg-danger/10 transition-colors"
-          >
-            <Square size={12} />
-            End
-          </button>
-        </div>
-      )}
-
-      {/* Mode selector (only when idle) */}
-      {state === 'idle' && (
-        <div className="px-5 pt-12 pb-4">
-          <h1 className="text-xl font-bold text-text mb-4">New Session</h1>
-          <div className="flex gap-3">
-            <button
-              onClick={() => setMode('conversation')}
-              className={`flex-1 rounded-xl p-4 border transition-colors ${
-                mode === 'conversation'
-                  ? 'bg-primary/10 border-primary/30'
-                  : 'bg-surface border-border'
-              }`}
-            >
-              <MessageSquare
-                size={20}
-                className={mode === 'conversation' ? 'text-primary' : 'text-text-secondary'}
-              />
-              <p className="text-sm font-medium text-text mt-2">Conversation</p>
-              <p className="text-[10px] text-text-tertiary mt-0.5">
-                Meeting or discussion
-              </p>
-            </button>
-            <button
-              onClick={() => setMode('walk_and_think')}
-              className={`flex-1 rounded-xl p-4 border transition-colors ${
-                mode === 'walk_and_think'
-                  ? 'bg-primary/10 border-primary/30'
-                  : 'bg-surface border-border'
-              }`}
-            >
-              <Footprints
-                size={20}
-                className={mode === 'walk_and_think' ? 'text-primary' : 'text-text-secondary'}
-              />
-              <p className="text-sm font-medium text-text mt-2">Walk & Think</p>
-              <p className="text-[10px] text-text-tertiary mt-0.5">
-                Solo brainstorming
-              </p>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Timer + Mode indicator */}
-      {isActive && (
-        <div className="text-center py-4">
-          <p className="text-3xl font-mono text-text font-light">
-            {formatDuration(duration)}
-          </p>
-          <div className="flex items-center justify-center gap-1.5 mt-2">
-            {mode === 'conversation' ? (
-              <MessageSquare size={12} className="text-text-secondary" />
-            ) : (
-              <Footprints size={12} className="text-text-secondary" />
-            )}
-            <span className="text-xs text-text-secondary capitalize">
-              {mode === 'walk_and_think' ? 'Walk & Think' : 'Conversation'}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Transcript */}
-      <TranscriptView segments={transcript} />
-
-      {/* Whisper cards */}
-      {whisperCards.length > 0 && (
-        <div className="px-4 space-y-2 mb-4">
-          {whisperCards.map((card) => (
-            <WhisperCard key={card.id} card={card} onDismiss={dismissWhisper} />
-          ))}
-        </div>
-      )}
-
-      {/* Record button */}
-      <div className="flex justify-center py-6">
-        <RecordButton state={state} onClick={handleToggleRecord} />
+      <div className="bg-bg/95 backdrop-blur-sm border-b border-border px-4 py-3 flex items-center justify-between z-10">
+        <button
+          onClick={() => navigate(-1)}
+          className="p-1 text-text-secondary hover:text-text"
+        >
+          <ArrowLeft size={18} />
+        </button>
+        <ModePill currentModeId={selectedMode.id} onSwitch={handleModeSwitch} />
+        <div className="w-6" /> {/* Spacer for centering */}
       </div>
 
-      {/* Audio recorder (invisible, handles mic) */}
-      <AudioRecorder active={state === 'recording'} onChunk={sendAudioChunk} />
+      {/* Recording indicator + timer */}
+      <div className="text-center py-4">
+        <div className="flex items-center justify-center gap-2 mb-2">
+          <span className="w-2 h-2 rounded-full bg-danger animate-pulse" />
+          <span className="text-xs text-danger font-medium">LIVE</span>
+        </div>
+        <p className="text-3xl font-mono text-text font-light">
+          {formatDuration(duration)}
+        </p>
+      </div>
+
+      {/* Transcript */}
+      <div className="flex-1 bg-surface/30 rounded-xl mx-4 overflow-hidden flex flex-col">
+        <LiveTranscript
+          segments={transcript}
+          isCapturing={isCapturing}
+        />
+      </div>
+
+      {/* Thinking indicator */}
+      <ThinkingIndicator visible={isThinking} />
+
+      {/* Stop button */}
+      <div className="px-5 py-4">
+        <button
+          onClick={handleStopSession}
+          className="w-full bg-danger/10 border border-danger/20 text-danger font-semibold py-4 rounded-xl transition-colors flex items-center justify-center gap-2"
+        >
+          <Square size={16} />
+          Stop Session
+        </button>
+      </div>
+
+      {/* Whisper card stack */}
+      <WhisperStack
+        cards={whisperCards}
+        onDismiss={dismissWhisper}
+        onFeedback={submitFeedback}
+        onAcknowledge={acknowledgeWhisper}
+      />
     </div>
   );
 }
