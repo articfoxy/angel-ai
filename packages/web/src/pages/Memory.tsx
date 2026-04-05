@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Search, Loader, Brain, ArrowLeft, X, Clock, Link } from 'lucide-react';
+import { Search, Loader, Brain, ArrowLeft, X, Clock, Link, Trash2 } from 'lucide-react';
 import { PersonCard } from '../components/PersonCard';
 import { api } from '../services/api';
-import type { Memory as MemoryType } from '../types';
+import type { Memory as MemoryType, MemoryStats } from '../types';
 
 const filterTabs = [
   { value: 'all', label: 'All' },
@@ -56,19 +56,27 @@ const demoMemories: MemoryType[] = [
   },
 ];
 
+const demoStats: MemoryStats = { people: 47, projects: 12, commitments: 89, saves: 5, total: 153 };
+
 export function Memory() {
   const [memories, setMemories] = useState<MemoryType[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState('all');
   const [selectedMemory, setSelectedMemory] = useState<MemoryType | null>(null);
+  const [stats, setStats] = useState<MemoryStats>(demoStats);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   useEffect(() => {
+    api.getMemoryStats().then(setStats).catch(() => setStats(demoStats));
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
     api
       .getMemories(activeFilter, search)
       .then(setMemories)
       .catch(() => {
-        // Demo mode
         let filtered = demoMemories;
         if (activeFilter !== 'all') {
           filtered = filtered.filter((m) => m.type === activeFilter);
@@ -86,6 +94,25 @@ export function Memory() {
       .finally(() => setLoading(false));
   }, [activeFilter, search]);
 
+  const handleDelete = async (id: string) => {
+    setDeleting(id);
+    try {
+      await api.deleteMemory(id);
+      setMemories((prev) => prev.filter((m) => m.id !== id));
+      if (selectedMemory?.id === id) {
+        setSelectedMemory(null);
+      }
+    } catch {
+      // Demo: just remove from local state
+      setMemories((prev) => prev.filter((m) => m.id !== id));
+      if (selectedMemory?.id === id) {
+        setSelectedMemory(null);
+      }
+    } finally {
+      setDeleting(null);
+    }
+  };
+
   if (selectedMemory) {
     return (
       <div className="flex-1 overflow-y-auto pb-24">
@@ -96,7 +123,14 @@ export function Memory() {
           >
             <ArrowLeft size={20} />
           </button>
-          <h1 className="text-base font-semibold text-text">{selectedMemory.name}</h1>
+          <h1 className="text-base font-semibold text-text flex-1">{selectedMemory.name}</h1>
+          <button
+            onClick={() => handleDelete(selectedMemory.id)}
+            disabled={deleting === selectedMemory.id}
+            className="p-2 text-text-tertiary hover:text-danger rounded-lg transition-colors"
+          >
+            <Trash2 size={18} />
+          </button>
         </div>
 
         <div className="px-5 py-4">
@@ -139,6 +173,19 @@ export function Memory() {
       {/* Header */}
       <div className="px-5 pt-12 pb-2">
         <h1 className="text-xl font-bold text-text">Memory</h1>
+      </div>
+
+      {/* Stats bar */}
+      <div className="px-5 py-2">
+        <div className="bg-surface rounded-xl px-4 py-2.5 flex items-center gap-3 text-xs text-text-secondary overflow-x-auto">
+          <span className="whitespace-nowrap">{stats.people} people</span>
+          <span className="text-border">&middot;</span>
+          <span className="whitespace-nowrap">{stats.projects} projects</span>
+          <span className="text-border">&middot;</span>
+          <span className="whitespace-nowrap">{stats.commitments} commitments</span>
+          <span className="text-border">&middot;</span>
+          <span className="whitespace-nowrap">{stats.saves} saves</span>
+        </div>
       </div>
 
       {/* Search */}
@@ -185,7 +232,7 @@ export function Memory() {
         </div>
       </div>
 
-      {/* Memory grid */}
+      {/* Memory list */}
       <div className="px-5">
         {loading ? (
           <div className="flex justify-center py-12">
@@ -202,11 +249,19 @@ export function Memory() {
         ) : (
           <div className="space-y-2">
             {memories.map((memory) => (
-              <PersonCard
-                key={memory.id}
-                memory={memory}
-                onClick={setSelectedMemory}
-              />
+              <div key={memory.id} className="relative group">
+                <PersonCard memory={memory} onClick={setSelectedMemory} />
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(memory.id);
+                  }}
+                  disabled={deleting === memory.id}
+                  className="absolute right-3 top-3 p-1.5 rounded-lg text-text-tertiary hover:text-danger hover:bg-danger/10 opacity-0 group-hover:opacity-100 transition-all"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             ))}
           </div>
         )}

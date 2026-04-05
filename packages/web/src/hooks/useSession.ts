@@ -12,10 +12,17 @@ interface UseSessionReturn {
   transcript: TranscriptSegment[];
   whisperCards: WhisperCard[];
   duration: number;
+  isThinking: boolean;
   connect: () => void;
   disconnect: () => void;
   sendAudioChunk: (chunk: string) => void;
+  sendPCMChunk: (frame: Int16Array) => void;
   dismissWhisper: (id: string) => void;
+  sendWhisperFeedback: (cardId: string, helpful: boolean) => void;
+  acknowledgeWhisper: (cardId: string) => void;
+  startLiveSession: (modeId: string) => void;
+  stopLiveSession: () => void;
+  switchMode: (modeId: string) => void;
 }
 
 export function useSession({ sessionId, token }: UseSessionOptions): UseSessionReturn {
@@ -23,6 +30,7 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([]);
   const [whisperCards, setWhisperCards] = useState<WhisperCard[]>([]);
   const [duration, setDuration] = useState(0);
+  const [isThinking, setIsThinking] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
@@ -44,12 +52,47 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
       }, 1000);
     });
 
+    // Legacy event
     socket.on('transcript:update', (segment: TranscriptSegment) => {
-      setTranscript((prev) => [...prev, segment]);
+      setTranscript((prev) => [...prev, { ...segment, isFinal: true }]);
+    });
+
+    // New streaming events
+    socket.on('transcript:delta', (delta: TranscriptSegment) => {
+      setTranscript((prev) => {
+        const existing = prev.findIndex((s) => s.id === delta.id);
+        if (existing >= 0) {
+          const updated = [...prev];
+          updated[existing] = { ...delta, isFinal: false };
+          return updated;
+        }
+        return [...prev, { ...delta, isFinal: false }];
+      });
+    });
+
+    socket.on('transcript:final', (segment: TranscriptSegment) => {
+      setTranscript((prev) => {
+        const existing = prev.findIndex((s) => s.id === segment.id);
+        if (existing >= 0) {
+          const updated = [...prev];
+          updated[existing] = { ...segment, isFinal: true };
+          return updated;
+        }
+        return [...prev, { ...segment, isFinal: true }];
+      });
     });
 
     socket.on('whisper:card', (card: WhisperCard) => {
       setWhisperCards((prev) => [...prev, card]);
+    });
+
+    socket.on('inference:thinking', () => {
+      setIsThinking(true);
+      setTimeout(() => setIsThinking(false), 5000);
+    });
+
+    socket.on('session:live-status', (status: { state: SessionState }) => {
+      setState(status.state);
     });
 
     socket.on('session:processing', () => {
@@ -80,8 +123,35 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
     socketRef.current?.emit('audio:chunk', { data: chunk });
   }, []);
 
+  const sendPCMChunk = useCallback((frame: Int16Array) => {
+    socketRef.current?.emit('audio:chunk', frame.buffer);
+  }, []);
+
   const dismissWhisper = useCallback((id: string) => {
     setWhisperCards((prev) => prev.filter((c) => c.id !== id));
+  }, []);
+
+  const sendWhisperFeedback = useCallback((cardId: string, helpful: boolean) => {
+    socketRef.current?.emit('whisper:feedback', { cardId, helpful });
+    setWhisperCards((prev) =>
+      prev.map((c) => (c.id === cardId ? { ...c, helpful } : c))
+    );
+  }, []);
+
+  const acknowledgeWhisper = useCallback((cardId: string) => {
+    socketRef.current?.emit('whisper:acknowledge', { cardId });
+  }, []);
+
+  const startLiveSession = useCallback((modeId: string) => {
+    socketRef.current?.emit('session:start-live', { modeId });
+  }, []);
+
+  const stopLiveSession = useCallback(() => {
+    socketRef.current?.emit('session:stop-live');
+  }, []);
+
+  const switchMode = useCallback((modeId: string) => {
+    socketRef.current?.emit('mode:switch', { modeId });
   }, []);
 
   useEffect(() => {
@@ -96,9 +166,16 @@ export function useSession({ sessionId, token }: UseSessionOptions): UseSessionR
     transcript,
     whisperCards,
     duration,
+    isThinking,
     connect,
     disconnect,
     sendAudioChunk,
+    sendPCMChunk,
     dismissWhisper,
+    sendWhisperFeedback,
+    acknowledgeWhisper,
+    startLiveSession,
+    stopLiveSession,
+    switchMode,
   };
 }

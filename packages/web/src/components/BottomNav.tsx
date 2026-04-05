@@ -1,18 +1,19 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Home, Brain, FileText, Mic } from 'lucide-react';
+import { Home, Brain, FileText, Mic, Settings } from 'lucide-react';
 
 const tabs = [
   { path: '/', icon: Home, label: 'Home' },
-  { path: '/session', icon: Mic, label: 'Record', isCenter: true },
   { path: '/memory', icon: Brain, label: 'Memory' },
+  { path: '/session', icon: Mic, label: 'Record', isCenter: true },
   { path: '/digest', icon: FileText, label: 'Digest' },
+  { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
 export function BottomNav() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Hide on login/register pages
+  // Hide on login/register pages and during active recording
   if (location.pathname === '/login') return null;
 
   return (
@@ -52,10 +53,10 @@ export function BottomNav() {
             <button
               key={tab.path}
               onClick={() => navigate(tab.path)}
-              className="flex flex-col items-center justify-center min-w-[64px] h-full"
+              className="flex flex-col items-center justify-center min-w-[52px] h-full"
             >
               <Icon
-                size={22}
+                size={20}
                 className={`transition-colors ${
                   isActive ? 'text-primary' : 'text-text-secondary'
                 }`}
