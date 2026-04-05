@@ -1,0 +1,128 @@
+import type {
+  AuthResponse,
+  Session,
+  Memory,
+  Action,
+  Digest,
+  User,
+} from '../types';
+
+const BASE_URL = import.meta.env.VITE_API_URL || '';
+
+function getToken(): string | null {
+  return localStorage.getItem('angel_token');
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+
+  if (res.status === 401) {
+    localStorage.removeItem('angel_token');
+    localStorage.removeItem('angel_user');
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.message || `Request failed: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export const api = {
+  // Auth
+  login(email: string, password: string) {
+    return request<AuthResponse>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+  },
+
+  register(name: string, email: string, password: string) {
+    return request<AuthResponse>('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ name, email, password }),
+    });
+  },
+
+  getProfile() {
+    return request<User>('/api/auth/me');
+  },
+
+  // Sessions
+  getSessions() {
+    return request<Session[]>('/api/sessions');
+  },
+
+  getSession(id: string) {
+    return request<Session>(`/api/sessions/${id}`);
+  },
+
+  startSession(mode: string) {
+    return request<Session>('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    });
+  },
+
+  endSession(id: string) {
+    return request<Session>(`/api/sessions/${id}/end`, { method: 'POST' });
+  },
+
+  // Memory
+  getMemories(type?: string, search?: string) {
+    const params = new URLSearchParams();
+    if (type && type !== 'all') params.set('type', type);
+    if (search) params.set('search', search);
+    const qs = params.toString();
+    return request<Memory[]>(`/api/memory${qs ? `?${qs}` : ''}`);
+  },
+
+  getMemory(id: string) {
+    return request<Memory>(`/api/memory/${id}`);
+  },
+
+  // Actions
+  getActions(sessionId?: string) {
+    const qs = sessionId ? `?sessionId=${sessionId}` : '';
+    return request<Action[]>(`/api/actions${qs}`);
+  },
+
+  generateAction(sessionId: string, type: string) {
+    return request<Action>('/api/actions/generate', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, type }),
+    });
+  },
+
+  updateAction(id: string, data: Partial<Action>) {
+    return request<Action>(`/api/actions/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  },
+
+  // Digest
+  getDigest(date?: string) {
+    const qs = date ? `?date=${date}` : '';
+    return request<Digest>(`/api/digest${qs}`);
+  },
+
+  generateDigest(date: string) {
+    return request<Digest>('/api/digest/generate', {
+      method: 'POST',
+      body: JSON.stringify({ date }),
+    });
+  },
+};
