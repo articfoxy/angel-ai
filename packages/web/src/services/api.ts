@@ -34,29 +34,36 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.message || `Request failed: ${res.status}`);
+    throw new Error(body.error || body.message || `Request failed: ${res.status}`);
   }
 
-  return res.json();
+  const json = await res.json();
+  // Server wraps responses in { success, data } — unwrap automatically
+  if (json && typeof json === 'object' && 'success' in json && 'data' in json) {
+    return json.data as T;
+  }
+  return json as T;
 }
 
 export const api = {
   // Auth
-  login(email: string, password: string) {
-    return request<AuthResponse>('/api/auth/login', {
+  async login(email: string, password: string): Promise<AuthResponse> {
+    const data = await request<{ user: User; accessToken: string; refreshToken: string }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
+    return { user: data.user, token: data.accessToken };
   },
 
-  register(name: string, email: string, password: string) {
-    return request<AuthResponse>('/api/auth/register', {
+  async register(name: string, email: string, password: string): Promise<AuthResponse> {
+    const data = await request<{ user: User; accessToken: string; refreshToken: string }>('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify({ name, email, password }),
     });
+    return { user: data.user, token: data.accessToken };
   },
 
-  getProfile() {
+  async getProfile(): Promise<User> {
     return request<User>('/api/auth/me');
   },
 

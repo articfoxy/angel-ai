@@ -39,6 +39,11 @@ export function useAuthProvider(): AuthContextValue {
 
   useEffect(() => {
     if (token) {
+      // Skip profile fetch for demo tokens
+      if (token === 'demo-token') {
+        setLoading(false);
+        return;
+      }
       api
         .getProfile()
         .then((u) => {
