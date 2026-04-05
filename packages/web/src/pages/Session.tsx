@@ -91,15 +91,16 @@ export function Session() {
 
   const handleModeSwitch = useCallback((newMode: string) => {
     setMode(newMode);
-    if (state === 'recording') {
+    if (currentState === 'recording') {
       switchMode(newMode);
     }
   }, [state, switchMode]);
 
-  const isActive = state === 'recording' || state === 'processing';
+  const currentState = state as string;
+  const isActive = currentState === 'recording' || currentState === 'processing';
 
   // Mode selection screen
-  if (state === 'idle') {
+  if (currentState === 'idle') {
     return (
       <div className="flex-1 flex flex-col pb-24">
         <div className="px-5 pt-12 pb-4">
@@ -141,7 +142,7 @@ export function Session() {
   }
 
   // Processing screen
-  if (state === 'processing') {
+  if (currentState === 'processing') {
     return (
       <div className="flex-1 flex flex-col items-center justify-center pb-24">
         <Loader size={32} className="text-primary animate-spin-slow mb-4" />
@@ -180,7 +181,7 @@ export function Session() {
       )}
 
       {/* Mode selector (only when idle) */}
-      {state === 'idle' && (
+      {currentState === 'idle' && (
         <div className="px-5 py-4 animate-fade-in">
           <ModeSelector selectedMode={mode} onSelect={setMode} />
         </div>
@@ -228,22 +229,22 @@ export function Session() {
           <div className="px-5 py-4">
             <button
               onClick={handleStopSession}
-              disabled={state === 'processing'}
+              disabled={currentState === 'processing'}
               className="w-full flex items-center justify-center gap-2 bg-danger hover:bg-danger/90 disabled:opacity-50 text-white font-medium py-4 rounded-xl transition-colors"
             >
-              {state === 'processing' ? (
+              {currentState === 'processing' ? (
                 <Loader size={18} className="animate-spin-slow" />
               ) : (
                 <Square size={18} />
               )}
-              {state === 'processing' ? 'Processing...' : 'Stop Session'}
+              {currentState === 'processing' ? 'Processing...' : 'Stop Session'}
             </button>
           </div>
         </>
       )}
 
       {/* Start button (idle state) */}
-      {state === 'idle' && (
+      {currentState === 'idle' && (
         <div className="px-5 py-4 mt-auto">
           <button
             onClick={handleStartSession}

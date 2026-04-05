@@ -71,6 +71,7 @@ export interface WhisperCard {
   detail?: string;
   priority?: 'low' | 'medium' | 'high';
   ttl?: number;
+  requiresAck?: boolean;
   relatedMemoryId?: string;
   createdAt: string;
   helpful?: boolean | null;

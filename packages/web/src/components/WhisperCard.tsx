@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Lightbulb, Bell, Info, Sparkles, X, ThumbsUp, ThumbsDown, Search, HelpCircle, CheckCircle, BarChart3, Zap } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { Search, HelpCircle, CheckCircle, BarChart3, Zap, Bell, X, ThumbsUp, ThumbsDown, ChevronUp, ChevronDown } from 'lucide-react';
 import type { WhisperCard as WhisperCardType } from '../types';
 
 interface WhisperCardProps {
@@ -9,33 +9,25 @@ interface WhisperCardProps {
   onAcknowledge?: (cardId: string) => void;
 }
 
-const typeIcons: Record<string, typeof Sparkles> = {
-  suggestion: Lightbulb,
-  reminder: Bell,
-  context: Search,
-  insight: Sparkles,
-  question: HelpCircle,
-  commitment: CheckCircle,
-  fact_check: BarChart3,
-  nudge: Bell,
-  action: Zap,
+const typeConfig: Record<string, { icon: typeof Search; color: string; label: string }> = {
+  context: { icon: Search, color: 'border-blue-500/50', label: 'Context' },
+  question: { icon: HelpCircle, color: 'border-yellow-500/50', label: 'Question' },
+  commitment: { icon: CheckCircle, color: 'border-green-500/50', label: 'Commitment' },
+  fact_check: { icon: BarChart3, color: 'border-purple-500/50', label: 'Fact Check' },
+  nudge: { icon: Bell, color: 'border-orange-500/50', label: 'Nudge' },
+  action: { icon: Zap, color: 'border-cyan-500/50', label: 'Action' },
 };
 
-const typeColors: Record<string, string> = {
-  suggestion: 'border-warning/30 bg-warning/5',
-  reminder: 'border-primary/30 bg-primary/5',
-  context: 'border-blue-500/30 bg-blue-500/5',
-  insight: 'border-success/30 bg-success/5',
-  question: 'border-yellow-500/30 bg-yellow-500/5',
-  commitment: 'border-green-500/30 bg-green-500/5',
-  fact_check: 'border-purple-500/30 bg-purple-500/5',
-  nudge: 'border-orange-500/30 bg-orange-500/5',
-  action: 'border-cyan-500/30 bg-cyan-500/5',
+const priorityClasses: Record<string, string> = {
+  low: 'opacity-80',
+  medium: '',
+  high: 'ring-1 ring-white/10',
 };
 
 export function WhisperCard({ card, onDismiss, onFeedback, onAcknowledge }: WhisperCardProps) {
   const [dismissing, setDismissing] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [feedbackGiven, setFeedbackGiven] = useState<'positive' | 'negative' | null>(null);
   const startXRef = useRef(0);
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -58,6 +50,7 @@ export function WhisperCard({ card, onDismiss, onFeedback, onAcknowledge }: Whis
   };
 
   const handleFeedback = (helpful: boolean) => {
+    setFeedbackGiven(helpful ? 'positive' : 'negative');
     onFeedback?.(card.id, helpful);
   };
 
@@ -79,10 +72,17 @@ export function WhisperCard({ card, onDismiss, onFeedback, onAcknowledge }: Whis
     }
   };
 
+  // Haptic feedback on mount
+  useEffect(() => {
+    if (navigator.vibrate) {
+      navigator.vibrate(50);
+    }
+  }, []);
+
   return (
     <div
       ref={cardRef}
-      className={`rounded-xl border-l-4 ${config.color} bg-zinc-800/90 backdrop-blur-sm p-4 touch-pan-x ${
+      className={`relative rounded-xl border-l-4 ${config.color} bg-zinc-800/90 backdrop-blur-sm p-4 touch-pan-x ${
         priorityClasses[card.priority || 'medium']
       } ${dismissing ? 'animate-slide-out-right' : 'animate-slide-in-right'}`}
       onTouchStart={handleTouchStart}
@@ -133,16 +133,16 @@ export function WhisperCard({ card, onDismiss, onFeedback, onAcknowledge }: Whis
 
       {/* Feedback + acknowledge */}
       <div className="flex items-center gap-2 mt-3 ml-7">
-        {card.type === 'commitment' && !card.acknowledged && (
+        {card.type === 'commitment' && card.requiresAck && (
           <button
             onClick={handleAcknowledge}
             className="flex items-center gap-1 text-xs text-success hover:text-success/80 transition-colors px-2 py-1 rounded-lg hover:bg-success/10"
           >
-            <CheckCircle2 size={12} />
+            <CheckCircle size={12} />
             Got it
           </button>
         )}
-        {!card.feedback && (
+        {!feedbackGiven && (
           <>
             <button
               onClick={() => handleFeedback(true)}
@@ -158,10 +158,10 @@ export function WhisperCard({ card, onDismiss, onFeedback, onAcknowledge }: Whis
             </button>
           </>
         )}
-        {card.feedback === 'positive' && (
+        {feedbackGiven === 'positive' && (
           <span className="text-[10px] text-success">Thanks!</span>
         )}
-        {card.feedback === 'negative' && (
+        {feedbackGiven === 'negative' && (
           <span className="text-[10px] text-text-tertiary">Noted</span>
         )}
       </div>

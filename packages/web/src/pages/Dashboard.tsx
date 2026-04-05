@@ -25,14 +25,13 @@ function getGreeting(): string {
 }
 
 const demoStats: DashboardStats = {
-  streak: { current: 7, longest: 14, lastSessionDate: new Date().toISOString() },
-  saves: 3,
+  streak: { current: 7, longest: 14, todaySessions: 2 },
+  angelSaves: 3,
   memoryStats: { people: 47, projects: 12, commitments: 89, saves: 5, total: 153 },
   pendingCommitments: [
     { id: 'c1', text: 'Send proposal to Mike', completed: false, dueDate: new Date(Date.now() + 86400000).toISOString() },
     { id: 'c2', text: 'Review Q3 budget doc', completed: false, dueDate: new Date(Date.now() + 172800000).toISOString() },
   ],
-  todaySessions: 0,
 };
 
 export function Dashboard() {
