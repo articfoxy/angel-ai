@@ -5,17 +5,20 @@ import { prisma } from "../lib/prisma.js";
 export async function generateWhisperCards(
   sessionId: string,
   transcript: string,
-  userId: string
+  userId: string,
 ): Promise<WhisperCardSuggestion[]> {
   const memories = await prisma.memory.findMany({
     where: { userId },
-    orderBy: { lastMentioned: "desc" },
+    orderBy: { updatedAt: "desc" },
     take: 20,
-    select: { name: true, content: true },
+    select: { title: true, content: true },
   });
 
   const provider = getProvider();
-  const suggestions = await provider.suggest(transcript, memories);
+  const suggestions = await provider.suggest(
+    transcript,
+    memories.map((m) => ({ name: m.title, content: m.content })),
+  );
 
   const threshold = config.ai.whisperConfidenceThreshold;
   const filtered = suggestions.filter((s) => s.confidence >= threshold);
@@ -24,6 +27,7 @@ export async function generateWhisperCards(
     await prisma.whisperCard.create({
       data: {
         sessionId,
+        userId,
         type: suggestion.type,
         content: suggestion.content,
         confidence: suggestion.confidence,

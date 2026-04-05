@@ -12,7 +12,8 @@ function paramId(req: AuthRequest): string {
 }
 
 const createSchema = z.object({
-  mode: z.enum(["conversation", "walk_and_think"]).default("conversation"),
+  mode: z.enum(["conversation", "walk_and_think", "live"]).default("conversation"),
+  modeId: z.string().optional(),
   title: z.string().optional(),
 });
 
@@ -34,6 +35,7 @@ router.post("/", async (req: AuthRequest, res: Response, next) => {
       data: {
         userId: req.userId!,
         mode: body.mode,
+        modeId: body.modeId ?? "meeting",
         title: body.title,
       },
     });
@@ -171,11 +173,16 @@ router.delete("/:id", async (req: AuthRequest, res: Response, next) => {
     const id = paramId(req);
     await prisma.whisperCard.deleteMany({
       where: {
-        session: { id, userId: req.userId! },
+        sessionId: id,
+        userId: req.userId!,
       },
     });
     await prisma.action.deleteMany({
       where: { sessionId: id, userId: req.userId! },
+    });
+    await prisma.memory.updateMany({
+      where: { sessionId: id, userId: req.userId! },
+      data: { sessionId: null },
     });
     await prisma.session.delete({
       where: { id, userId: req.userId! },
